@@ -134,18 +134,18 @@ data/pretrained/
 
 ```bash
 # Single image (CPU) — using the bundled test assets
-python scripts/run_stage1.py --image assets/tom/1.jpg
+python scripts/run_stage1.py --image assets/tom/1.jpeg
 
 # Single image (GPU) with debug output
 python scripts/run_stage1.py \
-    --image assets/tom/1.jpg \
+    --image assets/tom/1.jpeg \
     --device cuda:0 \
     --debug \
     --subject tom
 
 # Multi-image shape aggregation (3 images of the same person)
 python scripts/run_stage1.py \
-    --image assets/tom/1.jpg assets/tom/2.jpeg assets/tom/3.jpeg \
+    --image assets/tom/1.jpeg assets/tom/2.jpeg assets/tom/3.jpeg \
     --subject tom \
     --aggregation median
 ```
@@ -202,7 +202,7 @@ pytest tests/stage1/test_unit.py -v
 
 ```bash
 # The bundled assets/tom/ images work as test images
-export FACEFORGE_TEST_IMAGE=assets/tom/1.jpg
+export FACEFORGE_TEST_IMAGE=assets/tom/1.jpeg
 export FACEFORGE_DEVICE=cpu          # or cuda:0
 
 # All integration tests (detection → segmentation → MICA → DECA)
@@ -230,7 +230,7 @@ Available environment variables:
 pytest tests/stage1/test_unit.py
 
 # Everything — uses bundled test image
-export FACEFORGE_TEST_IMAGE=assets/tom/1.jpg
+export FACEFORGE_TEST_IMAGE=assets/tom/1.jpeg
 pytest tests/ -v
 ```
 
