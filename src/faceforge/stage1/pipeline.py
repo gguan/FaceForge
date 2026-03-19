@@ -10,6 +10,8 @@ import cv2
 import numpy as np
 import torch
 
+from faceforge._paths import PROJECT_ROOT
+
 from .config import Stage1Config
 from .data_types import Stage1Output, DetectionResult
 from .detection import MediaPipeDetector, RetinaFaceDetector, detect_all
@@ -37,12 +39,7 @@ class Stage1Pipeline:
         self.retina_detector = RetinaFaceDetector(config.device)
 
         # Face parser (BiSeNet)
-        project_root = os.path.abspath(os.path.join(
-            os.path.dirname(__file__), '..', '..', '..', '..',
-        ))
-        face_parsing_weights = os.path.join(
-            project_root, 'data', 'pretrained', '79999_iter.pth',
-        )
+        face_parsing_weights = str(PROJECT_ROOT / 'data' / 'pretrained' / '79999_iter.pth')
         if os.path.exists(face_parsing_weights):
             self.face_parser = FaceParser(face_parsing_weights, config.device)
         else:

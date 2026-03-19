@@ -14,6 +14,7 @@ import torch
 import torch.nn.functional as F
 
 from .config import Stage1Config
+from faceforge._paths import PROJECT_ROOT
 
 
 # ArcFace standard 5-point target coordinates (112×112 space)
@@ -55,9 +56,7 @@ class MICAInference:
         self.model_path = config.mica_model_path
 
         # Add MICA submodule to path
-        project_root = os.path.abspath(
-            os.path.join(os.path.dirname(__file__), '..', '..', '..', '..')
-        )
+        project_root = str(PROJECT_ROOT)
         mica_root = os.path.join(project_root, 'submodules', 'MICA')
         if mica_root not in sys.path:
             sys.path.insert(0, mica_root)

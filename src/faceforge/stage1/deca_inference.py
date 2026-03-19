@@ -11,6 +11,7 @@ import numpy as np
 import torch
 
 from .config import Stage1Config
+from faceforge._paths import PROJECT_ROOT
 
 
 class DECAInference:
@@ -19,12 +20,8 @@ class DECAInference:
     def __init__(self, config: Stage1Config):
         self.device = config.device
 
-        # Add project root to sys.path so decalib's internal imports work
-        # (decalib uses relative imports, but face_parsing model.py uses
-        #  "from submodules.face_parsing.resnet ..." which needs project root)
-        project_root = os.path.abspath(
-            os.path.join(os.path.dirname(__file__), '..', '..', '..', '..')
-        )
+        # Add project root to sys.path so decalib's internal imports work.
+        project_root = str(PROJECT_ROOT)
         if project_root not in sys.path:
             sys.path.insert(0, project_root)
 

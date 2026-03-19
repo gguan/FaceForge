@@ -4,13 +4,14 @@ Face segmentation using BiSeNet (19-class CelebAMask-HQ).
 Ported from: flame-head-tracker/submodules/face_parsing/FaceParsingUtil.py
 """
 
-import os
 import sys
 
 import cv2
 import numpy as np
 import torch
 from torchvision.transforms import transforms
+
+from faceforge._paths import PROJECT_ROOT
 
 
 class FaceParser:
@@ -19,12 +20,10 @@ class FaceParser:
     def __init__(self, model_path: str, device: str = 'cuda:0'):
         self.device = device
 
-        # Import BiSeNet from face_parsing submodule
-        # model.py uses absolute import: "from submodules.face_parsing.resnet import Resnet18"
-        # so project root must be in sys.path
-        project_root = os.path.abspath(
-            os.path.join(os.path.dirname(__file__), '..', '..', '..', '..')
-        )
+        # Import BiSeNet from face_parsing submodule.
+        # model.py uses absolute import "from submodules.face_parsing.resnet import Resnet18",
+        # so the project root must be on sys.path.
+        project_root = str(PROJECT_ROOT)
         if project_root not in sys.path:
             sys.path.insert(0, project_root)
         from submodules.face_parsing.model import BiSeNet
