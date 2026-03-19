@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "faceforge"
+version = "0.1.0"
+requires-python = ">=3.10"
+description = "Identity-aware 3D face reconstruction and tracking"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+markers = [
+    "integration: requires real model weights and a test image",
+    "slow: tests that take more than 10 seconds (full pipeline)",
+]

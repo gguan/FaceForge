@@ -1,0 +1,120 @@
+# ──────────────────────────────────────────────
+# Python
+# ──────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyd
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ──────────────────────────────────────────────
+# Model weights & large binary assets
+# (download separately — see docs/setup.md)
+# ──────────────────────────────────────────────
+data/pretrained/
+*.pth
+*.tar
+*.pkl
+*.npz
+*.npy
+*.onnx
+*.pb
+*.caffemodel
+*.h5
+*.weights
+*.bin
+
+
+# ──────────────────────────────────────────────
+# Generated outputs
+# ──────────────────────────────────────────────
+output/
+runs/
+logs/
+*.log
+wandb/
+
+# ──────────────────────────────────────────────
+# Virtual environments
+# ──────────────────────────────────────────────
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.conda/
+
+# ──────────────────────────────────────────────
+# Testing & coverage
+# ──────────────────────────────────────────────
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+nosetests.xml
+coverage.xml
+*.cover
+
+# ──────────────────────────────────────────────
+# Jupyter
+# ──────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb
+
+# ──────────────────────────────────────────────
+# Type checking / linting
+# ──────────────────────────────────────────────
+.mypy_cache/
+.ruff_cache/
+.dmypy.json
+dmypy.json
+
+# ──────────────────────────────────────────────
+# IDEs
+# ──────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ──────────────────────────────────────────────
+# OS
+# ──────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+
+# ──────────────────────────────────────────────
+# Symlinks created at runtime
+# (MICA creates submodules/MICA/data/FLAME2020/generic_model.pkl)
+# ──────────────────────────────────────────────
+submodules/MICA/data/
