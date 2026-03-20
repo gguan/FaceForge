@@ -5,6 +5,7 @@ Reference: pixel3dmm tracker.py L975-996 (normal loss with outlier filtering)
 
 import torch
 import torch.nn.functional as F
+from torchvision.transforms.functional import gaussian_blur
 
 
 def normal_loss(rendered_normals: torch.Tensor, predicted_normals: torch.Tensor,
@@ -56,10 +57,11 @@ def normal_loss(rendered_normals: torch.Tensor, predicted_normals: torch.Tensor,
     if eye_mask is not None and eye_dilate_kernel > 0:
         eye_f = eye_mask.float().unsqueeze(1)  # [B, 1, H, W]
         k = eye_dilate_kernel
-        # Gaussian-like kernel (approximate with uniform for simplicity)
-        kernel = torch.ones(1, 1, k, k, device=eye_f.device) / (k * k)
-        dilated = F.conv2d(eye_f, kernel, padding=k // 2)
-        valid = valid & (dilated.squeeze(1) < 0.5)
+        # Gaussian blur dilation — matches pixel3dmm tracker.py L979-982:
+        # gaussian_blur(ops['mask_images_eyes'], [ksize, ksize], sigma=[ksize, ksize]) > 0
+        # Any pixel with nonzero Gaussian response from the eye region is excluded.
+        dilated = gaussian_blur(eye_f, [k, k], sigma=[k, k])  # [B, 1, H, W]
+        valid = valid & (dilated.squeeze(1) <= 0.0)
 
     mask = face_mask.bool() & valid
 

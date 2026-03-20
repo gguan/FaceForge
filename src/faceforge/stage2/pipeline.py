@@ -16,7 +16,7 @@ from faceforge._paths import PROJECT_ROOT
 from faceforge.stage1.data_types import Stage1Output
 from .config import Stage2Config
 from .data_types import PreprocessedData, SharedParams, PerImageParams, Stage2Output
-from .flame_model import FLAMEModel
+from .flame_model import FLAMEModel, batch_rodrigues
 from .camera import build_intrinsics, build_extrinsics, project_points, world_to_camera
 from .renderer import NvdiffrastRenderer
 from .pixel3dmm_inference import Pixel3DMMInference
@@ -311,6 +311,12 @@ class Stage2Pipeline:
             # valid_bg: pixel3dmm only penalizes in background pixels (seg <= 1)
             sil_bg = (seg <= 1).float()
 
+            # Head pose rotation: FLAME applies head_pose internally as global_orient,
+            # so rendered normals are in head_pose-rotated space.
+            # To compare with pixel3dmm canonical-space normals: R_head^T @ rendered.
+            # Ref: pixel3dmm tracker.py L984-986 (einsum 'bxy,bxhw->byhw' = R^T @ normals)
+            R_head = batch_rodrigues(per_img.head_pose)  # [B, 3, 3]
+
             loss_kwargs.update(
                 rendered_image=render_out.get('image'),
                 rendered_normals=render_out.get('normal'),
@@ -318,7 +324,7 @@ class Stage2Pipeline:
                 target_image=preprocessed.target_image.to(self.device),
                 predicted_normals=preprocessed.pixel3dmm_normals.to(self.device),
                 target_arcface_feat=preprocessed.arcface_feat.to(self.device),
-                cam_rotation=RT[:, :3, :3],
+                cam_rotation=R_head,
                 sil_fg_mask=sil_fg,
                 sil_valid_bg_mask=sil_bg,
             )
@@ -388,14 +394,24 @@ class Stage2Pipeline:
         uv_map, normal_map = self.pixel3dmm.predict(
             s1out.aligned_image, s1out.face_mask)
 
-        # Convert face_mask to binary (skin + facial features)
-        seg = s1out.face_mask.squeeze(0) if s1out.face_mask.dim() > 2 else s1out.face_mask
+        # Preserve raw 19-class segmentation for pixel3dmm-style mask construction
+        # (needed for silhouette fg/bg split in _forward_step)
+        seg_raw = s1out.face_mask
+        if seg_raw.dim() == 2:
+            seg_raw = seg_raw.unsqueeze(0)   # [1, H, W]
+        elif seg_raw.dim() == 3:
+            pass                             # already [1, H, W]
+        face_segmentation = seg_raw.long()   # [1, H, W] int
+
+        # Binary face mask: classes 1-13 = skin + facial features
+        seg = seg_raw.squeeze(0)
         binary_mask = ((seg > 0) & (seg <= 13)).float()
 
         return PreprocessedData(
             pixel3dmm_uv=uv_map,
             pixel3dmm_normals=normal_map,
             face_mask=binary_mask.unsqueeze(0),
+            face_segmentation=face_segmentation,
             target_image=s1out.aligned_image,
             target_lmks_68=s1out.lmks_68,
             target_lmks_eyes=s1out.lmks_eyes,

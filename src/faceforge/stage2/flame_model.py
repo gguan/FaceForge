@@ -249,9 +249,10 @@ class FLAMEModel(nn.Module):
         """Load FLAME UV coords + valid vertex mask for UV loss."""
         uv_resolved = _resolve_path(uv_path)
         uv_coords = np.load(uv_resolved).astype(np.float32)  # [5023, 2]
-        # Flip both U and V axes (ref: pixel3dmm renderer_nvdiffrast.py L87-88)
-        uv_coords[:, 0] = (-uv_coords[:, 0]) + 1.0  # flip U
-        uv_coords[:, 1] = (-uv_coords[:, 1]) + 1.0  # flip V
+        # Only flip V axis (ref: pixel3dmm losses.py L61: can_uv[...,1] = (-can_uv[...,1]) + 1)
+        # U is NOT flipped here. The renderer flips U internally via uv_images=[1-texc_u, texc_v]
+        # which nets out to U unchanged, so can_uv and the network output both use raw-U convention.
+        uv_coords[:, 1] = (-uv_coords[:, 1]) + 1.0  # flip V only
         self.register_buffer('flame_uv_coords', torch.from_numpy(uv_coords))
 
         valid_resolved = _resolve_path(valid_verts_path)
