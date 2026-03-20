@@ -40,7 +40,16 @@
 - **输出**: expression (50维), head pose (3维), jaw pose (3维), texture (50维), lighting (27维, 9×3 SH)
 - **在本 pipeline 中的角色**: 与 MICA 互补 — MICA 提供 shape, DECA 提供表情/姿态/光照初始化
 
-### 2.6 flame-head-tracker
+### 2.6 3DDFA-V3 (CVPR 2024 Highlight)
+
+- **方法**: ResNet50 回归 + Part Re-projection Distance Loss (PRDL)
+- **核心优势**: 将面部语义分割 mask 转换为 2D 点集, 通过网格锚点计算点集统计距离, 替代可微渲染 silhouette 比较
+- **解决的问题**: 传统 renderer-based silhouette loss 容易陷入局部最优且梯度不稳定, PRDL 提供清晰稳定的梯度
+- **输出**: BFM 参数 + 8 区域面部分割
+- **参考价值**: PRDL 的 loss 设计与参数化模型无关 (仅需 2D 投影), 可直接迁移到 FLAME; 本项目已有 BiSeNet 19-class 分割, 可直接提供 PRDL 所需的语义 mask
+- **论文**: [arXiv:2312.00311](https://arxiv.org/abs/2312.00311), 代码: [3DDFA-V3](https://github.com/wang-zidu/3DDFA-V3)
+
+### 2.7 flame-head-tracker
 
 - **方法**: MICA + DECA 混合初始化 → Landmark 拟合 (~0.9s/帧) + 光度拟合 (~1.9s/帧)
 - **核心优势**: 轻量成熟, 表情/姿态/相机参数联合优化
@@ -139,6 +148,7 @@ L_total = λ₁·L_landmark       # 98点 PIPNet landmark + 不确定性加权 (
 | `L_pixel3dmm_uv` | Pixel3DMM | 稠密几何约束, 数万像素级 UV 对应 |
 | `L_normal` | Pixel3DMM | 表面朝向一致性, 补充深度信息 |
 | `L_contour` | HRN | 下颌线和颧骨轮廓加权, 人脸辨识度最高区域 |
+| `L_prdl` | **3DDFA-V3 备选** | Part Re-projection Distance Loss, 可统一替代 `L_contour` + `L_region_weight`, 见下方备选方案 |
 | `L_photometric` | VHAP / flame-head-tracker | 像素颜色一致性, 全局外观约束 |
 | `L_identity` | MICA (ArcFace) | **直接优化人脸识别层面的相似度** |
 | `L_region_weight` | **HiFace 启发** | 投影空间区域加权: 鼻/眼区域光度+landmark 损失 3x 权重, 无需 3D GT |
@@ -170,6 +180,48 @@ L_landmark_weighted = Σ region_weights[region_of(lmk_i)] * ||μ_i - μ̂_i||² 
 ```
 
 这个设计使优化器在鼻部/眼部区域分配更多梯度, 即使在光度损失主导全局收敛的中后期, 仍然持续细化高身份信息区域的几何精度。零额外数据, 仅需 `FLAME_masks.pkl` (项目中已有), **无需 3D GT 顶点**。
+
+**备选方案 — PRDL 统一替代 L_contour + L_region_weight (来自 3DDFA-V3)**:
+
+PRDL (Part Re-projection Distance Loss) 提供了一种更统一的方式来实现轮廓约束 + 区域加权, 且梯度比 renderer-based silhouette loss 更稳定。核心思路:
+
+1. 将 BiSeNet 面部分割 mask (已在 `segmentation.py` 中实现) 按语义区域转换为 2D 目标点集
+2. 将 FLAME mesh 按 `FLAME_masks.pkl` 区域分组, 可微投影到 2D 得到预测点集
+3. 在网格锚点上计算两个点集之间的统计距离 (替代传统 chamfer distance / silhouette IoU)
+
+```python
+# PRDL 伪代码
+for part in ['nose', 'eye_left', 'eye_right', 'mouth', 'jaw', ...]:
+    # 目标: BiSeNet 分割 mask → 2D 点集
+    target_pts = mask_to_points(segmentation[part])        # [N_t, 2]
+    # 预测: FLAME 区域顶点 → 可微投影
+    pred_pts = project(flame_vertices[flame_masks[part]])   # [N_p, 2]
+    # 在均匀网格锚点上计算统计距离
+    L_prdl += statistical_distance(pred_pts, target_pts, grid_anchors)
+```
+
+**相比当前方案的优劣**:
+
+| 对比维度 | 当前方案 (L_contour + L_region_weight) | PRDL 备选 |
+|----------|---------------------------------------|-----------|
+| 轮廓约束 | HRN chamfer distance (仅边界顶点) | 全区域点集分布匹配 (含内部) |
+| 区域加权 | 手动设定权重 (鼻3.0/眼2.5/嘴2.0/...) | 按语义部件自然分区, 无需手动调权 |
+| 梯度稳定性 | 依赖可微渲染光栅化 | 纯几何投影 + 统计距离, 梯度更清晰 |
+| 极端表情 | landmark 稀疏区域可能失效 | 分割 mask 提供稠密监督, 大表情更鲁棒 |
+| 实现复杂度 | 两个独立 loss, 各自调参 | 统一一个 loss, 但需实现点集统计距离 |
+| 已有基础设施 | BiSeNet + FLAME_masks.pkl ✓ | 同样可复用 BiSeNet + FLAME_masks.pkl ✓ |
+
+**建议**: 实现 Stage 2 时可先用当前方案 (L_contour + L_region_weight) 作为基线, 再实现 PRDL 作为对比实验。若 PRDL 表现更优, 可用以下统一 loss 替代:
+
+```
+L_total = λ₁·L_landmark
+        + λ₂·L_pixel3dmm_uv
+        + λ₃·L_normal
+        + λ_prdl·L_prdl          # 替代 L_contour + L_region_weight
+        + λ₅·L_photometric
+        + λ₆·L_identity
+        + λ_reg·L_reg
+```
 
 **关键设计 — L_identity (身份保持损失)**:
 
@@ -220,6 +272,7 @@ L_identity = 1 - cosine_similarity(feat_rendered, feat_input)
 | 2 | Pixel3DMM 稠密 UV 约束 | Pixel3DMM | Stage 2 | 约束从 68 点扩展到数万像素, 几何精度质变 |
 | 3 | 投影空间区域加权 | **HiFace 启发** | Stage 2 | 鼻/眼区域光度+landmark 3x 权重, 无需 3D GT, 纯推理可用 |
 | 4 | 轮廓加权损失 | HRN | Stage 2 | 下颌线是区分"像 vs 不像"的人眼第一感知区域 |
+| 4' | PRDL (备选) | **3DDFA-V3** | Stage 2 | 可统一替代 #3+#4, 梯度更稳定, 大表情更鲁棒; 需对比实验验证 |
 | 5 | 顶点张力加权 displacement | **HiFace 启发** | Stage 3 | 抑制表情区域位移噪声, 防止加 detail 降精度 (零数据) |
 | 6 | 98 点稠密 landmark + 不确定性加权 | **HiFace 启发** | Stage 2 | 比 68 点多 30 个约束, 遮挡降权更鲁棒 (已有 PIPNet) |
 | 7 | Stage 3 identity loss 校验 | **HiFace 启发** | Stage 3 | 确保 displacement 不破坏身份, 避免 DECA-d 式恶化 |
