@@ -67,7 +67,8 @@ def contour_loss(projected_vertices: torch.Tensor,
     verts = projected_vertices[:, boundary_vertex_indices]  # [B, N, 2]
     verts_x = verts[:, :, 0]  # [B, N]
     # projected_vertices y is already in image y-down (row index, 0=top)
-    verts_y_idx = torch.clamp(verts[:, :, 1].long(), 0, image_size - 1)  # [B, N]
+    # Use ceil to match HRN reference (L188: torch.ceil().long())
+    verts_y_idx = torch.clamp(torch.ceil(verts[:, :, 1]).long(), 0, image_size - 1)  # [B, N]
 
     # Look up left/right boundaries for each vertex's row
     batch_idx = torch.arange(B, device=verts.device).unsqueeze(1).expand(-1, verts_y_idx.shape[1])

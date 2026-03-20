@@ -69,8 +69,8 @@ class Stage2Config:
     occlusion_depth_eps: float = 0.01
 
     # === Normal loss ===
-    normal_delta_threshold: float = 0.15
-    normal_eye_dilate_kernel: int = 5
+    normal_delta_threshold: float = 0.33   # ref: pixel3dmm default
+    normal_eye_dilate_kernel: int = 13     # ref: pixel3dmm Gaussian blur kernel
 
     # === Landmark ===
     nose_landmark_weight: float = 3.0

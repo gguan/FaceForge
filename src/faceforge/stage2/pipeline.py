@@ -262,9 +262,9 @@ class Stage2Pipeline:
         RT = build_extrinsics(torch.zeros_like(per_img.head_pose), per_img.translation)
 
         # Project landmarks
-        proj_lmks_68, _ = project_points(lmks_68, K, RT)
-        proj_lmks_eyes, _ = project_points(lmks_eyes, K, RT)
-        proj_verts, proj_depths = project_points(vertices, K, RT)
+        proj_lmks_68, _ = project_points(lmks_68, K, RT, self.config.render_size)
+        proj_lmks_eyes, _ = project_points(lmks_eyes, K, RT, self.config.render_size)
+        proj_verts, proj_depths = project_points(vertices, K, RT, self.config.render_size)
 
         # Render
         render_out = {}
@@ -308,6 +308,7 @@ class Stage2Pipeline:
                 target_image=preprocessed.target_image.to(self.device),
                 predicted_normals=preprocessed.pixel3dmm_normals.to(self.device),
                 target_arcface_feat=preprocessed.arcface_feat.to(self.device),
+                cam_rotation=RT[:, :3, :3],  # for normal_loss: rotate rendered normals back to FLAME space
             )
 
         return loss_agg.compute(stage, image_idx=img_idx, **loss_kwargs)
@@ -342,7 +343,7 @@ class Stage2Pipeline:
         RT = build_extrinsics(torch.zeros_like(pip.head_pose), pip.translation)
 
         # Project landmarks
-        proj_lmks_68, _ = project_points(lmks_68, K, RT)
+        proj_lmks_68, _ = project_points(lmks_68, K, RT, self.config.render_size)
 
         # Render (if available)
         rendered_image = None

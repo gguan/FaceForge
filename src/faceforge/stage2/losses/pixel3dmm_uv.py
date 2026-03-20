@@ -124,7 +124,8 @@ class Pixel3DMMUVLoss:
         if mask.sum() == 0:
             return torch.tensor(0.0, device=self.device, requires_grad=True)
 
-        # L1, normalized by image size (ref: pixel3dmm losses.py L117-126)
-        loss = ((pred - target).abs() / image_size * mask.unsqueeze(-1).float()).sum()
-        loss = loss / (mask.sum() * 2 + 1e-8)  # *2 for x,y
+        # L1, normalized by image size.
+        # Use .mean() over the full tensor (including zeroed-out invalid entries)
+        # to match pixel3dmm reference normalization (ref: losses.py L122-126).
+        loss = ((pred - target).abs() / image_size * mask.unsqueeze(-1).float()).mean()
         return loss

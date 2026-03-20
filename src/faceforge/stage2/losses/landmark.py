@@ -14,7 +14,8 @@ def build_landmark_weights(device: torch.device, nose_weight: float = 3.0) -> to
     w[0:17] = 0.75     # jawline
     w[0:3] = 0.5       # jaw corners
     w[14:17] = 0.5     # jaw corners
-    w[27:36] = nose_weight  # nose bridge + tip (VHAP: 10x, we compromise)
+    w[27:31] = nose_weight  # nose bridge (VHAP: 10x, we compromise at 3x)
+    w[31:36] = 0.75        # nose bottom line — noisy, down-weight (ref: flame-head-tracker L631)
     w[36:48] = 3.0     # eye contours
     w[49:] = 2.0       # mouth contours
     return w

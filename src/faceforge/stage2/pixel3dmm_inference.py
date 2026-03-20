@@ -65,56 +65,62 @@ class Pixel3DMMInference:
         image = image.permute(0, 2, 3, 1)  # [1, H, W, 3]
         image = image.unsqueeze(1)  # [1, 1, H, W, 3]
 
-        # Build mask: skin + brow + eye + nose + lip, exclude mouth interior
-        # Ref: network_inference.py mask construction
+        # Build mask: match pixel3dmm reference exactly
+        # Ref: network_inference.py L127
+        # (seg == 2) | ((seg > 3) & (seg < 14)) & ~(seg == 11)
+        # = classes 2, 4-10, 12, 13 (excludes 0=bg, 1=skin, 3=r_brow, 11=mouth, 14+=neck/cloth/hair)
         seg = face_mask.squeeze(0)  # [H, W]
-        mask = ((seg == 1) | (seg == 2) | (seg == 3) |   # skin, brows
-                (seg == 4) | (seg == 5) |                 # eyes
-                (seg == 10) |                             # nose
-                (seg == 12) | (seg == 13))                # lips
-        mask = mask.float().unsqueeze(0).unsqueeze(0).unsqueeze(-1)  # [1, 1, H, W, 1]
+        mask = ((seg == 2) | ((seg > 3) & (seg < 14))) & ~(seg == 11)
+        mask = mask.long().unsqueeze(0).unsqueeze(0)  # [1, 1, H, W] matching ref shape
 
-        # Build batch dict
+        # Build batch dict — keys must match pixel3dmm Network.forward expectations
         batch = {
-            'image': image.to(self.device),
-            'mask': mask.to(self.device),
+            'tar_rgb': image.to(self.device),
+            'tar_msk': mask.to(self.device),
         }
 
-        # Original + horizontally flipped, average for stability
+        # Original + horizontally flipped, average for stability (TTA)
         batch_flip = {
-            'image': image.flip(3).to(self.device),
-            'mask': mask.flip(3).to(self.device),
+            'tar_rgb': image.flip(3).to(self.device),  # flip W dim in BHWC
+            'tar_msk': mask.flip(3).to(self.device),    # flip W dim in B1HW
         }
 
         # UV prediction
-        uv_pred = self._uv_model.net(batch)
-        uv_pred_flip = self._uv_model.net(batch_flip)
-        # Flip-back: reverse spatial W dim (dim -2 for channels-last [...,H,W,C]).
-        # Raw output is in [-1,1]; horizontal flip reverses u-axis → negate u channel.
-        uv_pred_flip = uv_pred_flip.flip(-2).clone()
-        uv_pred_flip[..., 0] = -uv_pred_flip[..., 0]
+        # model.net() returns (output_dict, conf) where output_dict values
+        # are channels-first: [B, seq, C, H, W]
+        uv_output, _ = self._uv_model.net(batch)
+        uv_output_flip, _ = self._uv_model.net(batch_flip)
+
+        uv_pred = uv_output['uv_map']        # [B, seq, 2, H, W]
+        uv_pred_flip = uv_output_flip['uv_map']
+
+        # Flip-back: reverse spatial W dim (dim=4 for [B,seq,C,H,W])
+        # Raw output is in [-1,1]; horizontal flip reverses u-axis → negate u channel
+        uv_pred_flip = uv_pred_flip.flip(dims=[4]).clone()
+        uv_pred_flip[:, :, 0, :, :] *= -1
+        uv_pred_flip[:, :, 0, :, :] += 2 * 0.0075  # sub-pixel centering correction (ref L149)
         uv_avg = (uv_pred + uv_pred_flip) / 2
         uv_map = torch.clamp((uv_avg + 1) / 2, 0, 1)  # [-1,1] → [0,1]
 
-        # Reshape to [1, 2, H, W]
+        # Reshape to [1, 2, H, W]: remove seq dim
         if uv_map.dim() == 5:
-            uv_map = uv_map.squeeze(1)  # remove seq dim
-        if uv_map.shape[-1] == 2:
-            uv_map = uv_map.permute(0, 3, 1, 2)  # BHWC → BCHW
+            uv_map = uv_map.squeeze(1)  # [B, 2, H, W] already channels-first
 
         # Normal prediction
-        normal_pred = self._normal_model.net(batch)
-        normal_pred_flip = self._normal_model.net(batch_flip)
+        normal_output, _ = self._normal_model.net(batch)
+        normal_output_flip, _ = self._normal_model.net(batch_flip)
+
+        normal_pred = normal_output['normals']        # [B, seq, 3, H, W]
+        normal_pred_flip = normal_output_flip['normals']
+
         # Flip-back: reverse spatial W dim; negate x-normal (horizontal mirror)
-        normal_pred_flip = normal_pred_flip.flip(-2)
-        normal_pred_flip = normal_pred_flip.clone()
-        normal_pred_flip[..., 0] = -normal_pred_flip[..., 0]
+        normal_pred_flip = normal_pred_flip.flip(dims=[4]).clone()
+        normal_pred_flip[:, :, 0, :, :] *= -1
         normal_avg = (normal_pred + normal_pred_flip) / 2
 
+        # Remove seq dim → [B, 3, H, W]
         if normal_avg.dim() == 5:
             normal_avg = normal_avg.squeeze(1)
-        if normal_avg.shape[-1] == 3:
-            normal_avg = normal_avg.permute(0, 3, 1, 2)  # → [1, 3, H, W]
 
         # Coordinate convention swap: [x, 1-z, 1-y], then re-normalize.
         # Normalization must come AFTER the swap: 1-z maps [-1,1]→[2,0], breaking

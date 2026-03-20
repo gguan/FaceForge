@@ -166,10 +166,13 @@ class Stage2Optimizer:
                 else:
                     scale = 1.0
             else:
+                # Small params (shape, expression, texture, lighting)
+                # Ref: pixel3dmm tracker.py — cumulative: /2 at 50%, /2 at 75%, /5 at 90%
+                # = 0.5, 0.25, 0.05 of initial LR
                 if progress > 0.9:
-                    scale = 0.2
+                    scale = 0.05
                 elif progress > 0.75:
-                    scale = 0.5
+                    scale = 0.25
                 elif progress > 0.5:
                     scale = 0.5
                 else:

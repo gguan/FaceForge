@@ -110,6 +110,7 @@ class LossAggregator:
                 losses['normal'] = c.w_normal * normal_loss(
                     kwargs['rendered_normals'], kwargs['predicted_normals'],
                     kwargs['face_mask'],
+                    cam_rotation=kwargs.get('cam_rotation'),
                     eye_mask=kwargs.get('eye_mask'),
                     delta_n=c.normal_delta_threshold,
                     eye_dilate_kernel=c.normal_eye_dilate_kernel,

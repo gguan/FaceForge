@@ -16,36 +16,51 @@ from .camera import world_to_camera, project_to_clip, project_points
 # Spherical Harmonics (ref: VHAP render_nvdiffrast.py L19-53)
 # ---------------------------------------------------------------------------
 
-SH_C0 = 1.0 / math.sqrt(4.0 * math.pi)
-SH_C1 = math.sqrt(3.0 / (4.0 * math.pi))
-SH_C2_0 = 0.5 * math.sqrt(15.0 / math.pi)
-SH_C2_1 = 0.5 * math.sqrt(15.0 / math.pi)
-SH_C2_2 = 0.25 * math.sqrt(5.0 / math.pi)
-SH_C2_3 = 0.5 * math.sqrt(15.0 / math.pi)
-SH_C2_4 = 0.25 * math.sqrt(15.0 / math.pi)
+# SH constants with diffuse BRDF transfer coefficients (cosine lobe convolution).
+# Exact match of VHAP render_nvdiffrast.py L83-96.
+# Band 0: 1/sqrt(4*pi)
+# Band 1: (2*pi/3) * sqrt(3/(4*pi))
+# Band 2: (pi/4) * <respective normalization>
+_PI = math.pi
+SH_CONST = [
+    1.0 / math.sqrt(4 * _PI),                                    # l=0
+    (2 * _PI / 3) * math.sqrt(3 / (4 * _PI)),                    # l=1, m=-1 (x)
+    (2 * _PI / 3) * math.sqrt(3 / (4 * _PI)),                    # l=1, m=0  (y)
+    (2 * _PI / 3) * math.sqrt(3 / (4 * _PI)),                    # l=1, m=1  (z)
+    (_PI / 4) * 3 * math.sqrt(5 / (12 * _PI)),                   # l=2, m=-2 (xy)
+    (_PI / 4) * 3 * math.sqrt(5 / (12 * _PI)),                   # l=2, m=-1 (xz)
+    (_PI / 4) * 3 * math.sqrt(5 / (12 * _PI)),                   # l=2, m=1  (yz)
+    (_PI / 4) * (3 / 2) * math.sqrt(5 / (12 * _PI)),             # l=2, m=2  (x²-y²)
+    (_PI / 4) * (1 / 2) * math.sqrt(5 / (4 * _PI)),              # l=2, m=0  (3z²-1)
+]
 
 
 def compute_sh_basis(normals: torch.Tensor) -> torch.Tensor:
-    """Compute 9-term SH basis from normals.
+    """Compute 9-term SH basis from normals with diffuse transfer coefficients.
+
+    Basis order matches VHAP: 1, x, y, z, xy, xz, yz, x²-y², 3z²-1.
 
     Args:
         normals: [..., 3] unit normals
 
     Returns:
-        basis: [..., 9] SH basis values
+        basis: [..., 9] SH basis values (multiplied by transfer coefficients)
     """
     nx, ny, nz = normals[..., 0:1], normals[..., 1:2], normals[..., 2:3]
-    return torch.cat([
-        torch.ones_like(nx) * SH_C0,         # Y_00
-        ny * SH_C1,                           # Y_1-1
-        nz * SH_C1,                           # Y_10
-        nx * SH_C1,                           # Y_11
-        nx * ny * SH_C2_0,                    # Y_2-2
-        ny * nz * SH_C2_1,                    # Y_2-1
-        (3.0 * nz * nz - 1.0) * SH_C2_2,     # Y_20
-        nx * nz * SH_C2_3,                    # Y_21
-        (nx * nx - ny * ny) * SH_C2_4,        # Y_22
+    sh_raw = torch.cat([
+        torch.ones_like(nx),              # 1
+        nx,                               # x
+        ny,                               # y
+        nz,                               # z
+        nx * ny,                          # xy
+        nx * nz,                          # xz
+        ny * nz,                          # yz
+        nx * nx - ny * ny,                # x²-y²
+        3.0 * nz * nz - 1.0,             # 3z²-1
     ], dim=-1)
+    # Multiply by SH constants (including diffuse transfer coefficients)
+    sh_const = torch.tensor(SH_CONST, dtype=normals.dtype, device=normals.device)
+    return sh_raw * sh_const
 
 
 def compute_sh_shading(normals: torch.Tensor, sh_coeffs: torch.Tensor) -> torch.Tensor:

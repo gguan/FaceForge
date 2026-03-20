@@ -70,16 +70,19 @@ def build_extrinsics(head_pose: torch.Tensor, translation: torch.Tensor) -> torc
 
 
 def project_points(points_3d: torch.Tensor, K: torch.Tensor,
-                   RT: torch.Tensor) -> torch.Tensor:
-    """Project 3D points to 2D pixel coordinates.
+                   RT: torch.Tensor, image_size: int = 512) -> torch.Tensor:
+    """Project 3D points to 2D pixel coordinates (image y-down convention).
+
+    Ref: pixel3dmm tracker.py project_points_screen_space
 
     Args:
         points_3d: [B, N, 3] points in world space
         K: [B, 3, 3] intrinsics
         RT: [B, 4, 4] world-to-camera extrinsics
+        image_size: int, needed for y-flip
 
     Returns:
-        points_2d: [B, N, 2] pixel coordinates
+        points_2d: [B, N, 2] pixel coordinates (x right, y down)
         depths: [B, N] z-depth in camera space
     """
     R = RT[:, :3, :3]  # [B, 3, 3]
@@ -88,27 +91,63 @@ def project_points(points_3d: torch.Tensor, K: torch.Tensor,
     # World → Camera
     points_cam = torch.bmm(R, points_3d.transpose(1, 2)) + t  # [B, 3, N]
 
-    # Camera → Image
+    # Camera → Image (standard pinhole: u = fx*x/z + cx, v = fy*y/z + cy)
     points_proj = torch.bmm(K, points_cam)  # [B, 3, N]
 
     # Perspective divide
     depths = points_proj[:, 2, :]  # [B, N]
     points_2d = points_proj[:, :2, :] / (depths.unsqueeze(1) + 1e-8)  # [B, 2, N]
 
-    # FLAME uses y-up; image coordinates are y-down. Flip y: v_image = 2*cy - v
+    # FLAME uses y-up; image coordinates are y-down.
+    # Flip y: v_image = (image_size - 1) - v_pinhole
     # This matches the flip(1) applied to nvdiffrast output in renderer.py.
-    cy = K[:, 1, 2]  # [B]
     points_2d = points_2d.clone()
-    points_2d[:, 1, :] = 2.0 * cy.unsqueeze(1) - points_2d[:, 1, :]
+    points_2d[:, 1, :] = (image_size - 1) - points_2d[:, 1, :]
 
     return points_2d.transpose(1, 2), depths  # [B, N, 2], [B, N]
+
+
+def _build_projection_matrix(K: torch.Tensor, image_size: int,
+                              znear: float = 0.1, zfar: float = 10.0) -> torch.Tensor:
+    """Build OpenGL projection matrix from intrinsics.
+
+    Exact port of VHAP projection_from_intrinsics.
+    Camera convention: x right, y up, z out-of-screen.
+    Clip convention: x right, y up (before y-flip in rasterizer), z into screen, w = -z.
+
+    Args:
+        K: [B, 3, 3] intrinsics
+        image_size: int
+        znear, zfar: clip planes
+
+    Returns:
+        proj: [B, 4, 4] projection matrix
+    """
+    B = K.shape[0]
+    w = h = float(image_size)
+
+    fx = K[:, 0, 0]
+    fy = K[:, 1, 1]
+    cx = K[:, 0, 2]
+    cy = K[:, 1, 2]
+
+    proj = torch.zeros(B, 4, 4, device=K.device, dtype=K.dtype)
+    proj[:, 0, 0] = fx * 2 / w
+    proj[:, 1, 1] = fy * 2 / h
+    proj[:, 0, 2] = (w - 2 * cx) / w
+    proj[:, 1, 2] = (h - 2 * cy) / h
+    proj[:, 2, 2] = -(zfar + znear) / (zfar - znear)
+    proj[:, 2, 3] = -2 * zfar * znear / (zfar - znear)
+    proj[:, 3, 2] = -1.0
+    return proj
 
 
 def project_to_clip(vertices_cam: torch.Tensor, K: torch.Tensor,
                     image_size: int, znear: float = 0.1, zfar: float = 10.0) -> torch.Tensor:
     """Project camera-space vertices to clip space for nvdiffrast.
 
-    Ref: VHAP render_nvdiffrast.py L117-160 projection_from_intrinsics
+    Ref: VHAP render_nvdiffrast.py projection_from_intrinsics + camera_to_clip.
+    Uses matrix multiplication to ensure exact same convention.
 
     Args:
         vertices_cam: [B, V, 3] vertices in camera space
@@ -119,30 +158,15 @@ def project_to_clip(vertices_cam: torch.Tensor, K: torch.Tensor,
     Returns:
         verts_clip: [B, V, 4] clip-space coordinates (x, y, z, w)
     """
-    B, V = vertices_cam.shape[:2]
-    device, dtype = vertices_cam.device, vertices_cam.dtype
+    proj = _build_projection_matrix(K, image_size, znear, zfar)  # [B, 4, 4]
 
-    fx = K[:, 0, 0]  # [B]
-    fy = K[:, 1, 1]
-    cx = K[:, 0, 2]
-    cy = K[:, 1, 2]
+    # Homogeneous coordinates: [B, V, 3] → [B, V, 4]
+    ones = torch.ones(*vertices_cam.shape[:2], 1, device=vertices_cam.device, dtype=vertices_cam.dtype)
+    verts_h = torch.cat([vertices_cam, ones], dim=-1)  # [B, V, 4]
 
-    x = vertices_cam[:, :, 0]  # [B, V]
-    y = vertices_cam[:, :, 1]
-    z = vertices_cam[:, :, 2]
-
-    w = image_size
-    h = image_size
-
-    # NDC x, y
-    ndc_x = 2.0 * fx.unsqueeze(1) * x / (w * z + 1e-8) - 2.0 * cx.unsqueeze(1) / w + 1.0
-    ndc_y = 2.0 * fy.unsqueeze(1) * y / (h * z + 1e-8) - 2.0 * cy.unsqueeze(1) / h + 1.0
-
-    # NDC z (linear depth mapping)
-    ndc_z = (zfar + znear) / (zfar - znear) - 2.0 * zfar * znear / ((zfar - znear) * z + 1e-8)
-
-    clip = torch.stack([ndc_x, ndc_y, ndc_z, torch.ones_like(z)], dim=-1)  # [B, V, 4]
-    return clip
+    # clip = verts_h @ proj^T  (each row of verts multiplied by proj columns)
+    verts_clip = torch.bmm(verts_h, proj.transpose(1, 2))  # [B, V, 4]
+    return verts_clip
 
 
 def world_to_camera(vertices: torch.Tensor, RT: torch.Tensor) -> torch.Tensor:
