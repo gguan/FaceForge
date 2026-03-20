@@ -184,6 +184,8 @@ class Stage2Pipeline:
 
         for stage in stages:
             total_steps = self.opt_manager.get_steps(stage)
+            if total_steps <= 0:
+                continue  # skip stages with 0 steps (e.g. pixel3dmm_compat mode)
             stage_history = []
 
             # Tighten UV thresholds at medium stage

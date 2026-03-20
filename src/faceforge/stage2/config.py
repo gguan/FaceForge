@@ -3,6 +3,11 @@ from dataclasses import dataclass, field
 
 @dataclass
 class Stage2Config:
+    # === pixel3dmm 兼容模式 ===
+    # True: 仅使用 pixel3dmm 的 loss/权重/LR/步数，屏蔽其他来源的 loss
+    # False: 使用完整的多源 loss 组合
+    pixel3dmm_compat: bool = True
+
     # === 模型路径 ===
     flame_model_path: str = 'data/pretrained/FLAME2020/generic_model.pkl'
     flame_masks_path: str = 'data/pretrained/FLAME2020/FLAME_masks.pkl'
@@ -98,3 +103,49 @@ class Stage2Config:
     output_dir: str = 'output'
     save_debug: bool = True
     device: str = 'cuda:0'
+
+    def __post_init__(self):
+        if self.pixel3dmm_compat:
+            self._apply_pixel3dmm_compat()
+
+    def _apply_pixel3dmm_compat(self):
+        """Override all weights/LR/steps to match pixel3dmm tracker defaults.
+
+        Ref: pixel3dmm tracking/tracker.py + configs/tracking.yaml
+        """
+        # --- Loss weights (pixel3dmm per-frame online stage) ---
+        self.w_landmark = 5000.0        # lmk_eye2 (only eyes 36-48)
+        self.w_pixel3dmm_uv = 2000.0    # uv correspondence
+        self.w_normal = 1000.0          # L1 normal
+        self.w_sil = 500.0              # silhouette
+
+        # Disable non-pixel3dmm losses
+        self.w_contour = 0.0            # HRN
+        self.w_region_weight = 0.0      # HiFace
+        self.w_photometric = 0.0        # flame-head-tracker
+        self.w_identity = 0.0           # ArcFace
+        self.use_prdl = False
+        self.w_prdl = 0.0               # 3DDFA-V3
+
+        # --- Regularization (pixel3dmm defaults) ---
+        self.w_reg_shape_to_mica = 0.2
+        self.w_reg_shape_to_zero = 0.05
+        self.w_reg_expression = 0.05
+        self.w_reg_jaw = 0.01
+        self.w_reg_sh_mono = 0.0        # pixel3dmm doesn't use
+        self.w_reg_tex_tv = 0.0         # pixel3dmm doesn't use
+
+        # --- Learning rates (pixel3dmm defaults) ---
+        self.lr_shape = 0.002
+        self.lr_expression = 0.005
+        self.lr_head_pose = 0.005
+        self.lr_jaw_pose = 0.005
+        # lr_translation = 0.001 (already matches)
+        # lr_focal = 0.02 (already matches)
+
+        # --- Steps (pixel3dmm: 500 camera + 200 online) ---
+        self.coarse_lmk_steps = 500
+        self.coarse_uv_steps = 100
+        self.medium_steps = 200
+        self.fine_pca_steps = 0         # skip (pixel3dmm has no separate fine stage)
+        self.fine_detail_steps = 0      # skip

@@ -8,7 +8,7 @@ import torch
 
 
 def build_landmark_weights(device: torch.device, nose_weight: float = 3.0) -> torch.Tensor:
-    """Build per-landmark weights [68]."""
+    """Build per-landmark weights [68] (multi-source blend)."""
     w = torch.ones(68, device=device)
     w[17:] = 1.5       # face interior (51pt)
     w[0:17] = 0.75     # jawline
@@ -18,6 +18,19 @@ def build_landmark_weights(device: torch.device, nose_weight: float = 3.0) -> to
     w[31:36] = 0.75        # nose bottom line — noisy, down-weight (ref: flame-head-tracker L631)
     w[36:48] = 3.0     # eye contours
     w[49:] = 2.0       # mouth contours
+    return w
+
+
+def build_landmark_weights_pixel3dmm(device: torch.device) -> torch.Tensor:
+    """Build pixel3dmm-style landmark weights [68].
+
+    pixel3dmm online stage only uses eye contour landmarks (36-48) with weight 5000.
+    All other landmarks are zeroed out. The 5000 factor is applied via w_landmark in config.
+
+    Ref: pixel3dmm tracker.py L1108-1111 (lmk_eye2 loss)
+    """
+    w = torch.zeros(68, device=device)
+    w[36:48] = 1.0  # eye contours only
     return w
 
 
