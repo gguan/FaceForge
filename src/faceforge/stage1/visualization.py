@@ -371,23 +371,6 @@ class Stage1Visualizer:
                     p2 = lmks_68[contour[0]]
                     cv2.line(lmk_vis, (int(p1[0]), int(p1[1])),
                              (int(p2[0]), int(p2[1])), (0, 255, 0), 1)
-            # Diagnostic: project FLAME 3D landmarks to aligned image (red)
-            # Red dots = FLAME landmarks projected to aligned image
-            # Green dots = MediaPipe detected landmarks
-            # Overlap means projection is correct
-            if flame_lmks_3d is not None:
-                flame_lmks_2d = None
-                if deca_cam is not None and deca_crop_tform is not None and align_M is not None:
-                    flame_lmks_2d = _project_vertices_deca(
-                        flame_lmks_3d, deca_cam, deca_crop_tform, align_M,
-                    )
-                else:
-                    flame_lmks_2d = _project_vertices_similarity(
-                        flame_lmks_3d, flame_lmks_3d, lmks_68,
-                    )
-                if flame_lmks_2d is not None:
-                    for pt in flame_lmks_2d:
-                        cv2.circle(lmk_vis, (int(pt[0]), int(pt[1])), 2, (255, 0, 0), -1)
             panels.append(_resize(lmk_vis))
         else:
             panels.append(np.zeros((size, size, 3), dtype=np.uint8))
