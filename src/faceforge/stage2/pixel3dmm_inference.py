@@ -122,15 +122,23 @@ class Pixel3DMMInference:
         if normal_avg.dim() == 5:
             normal_avg = normal_avg.squeeze(1)
 
-        # Coordinate convention swap: [x, 1-z, 1-y], then re-normalize.
-        # Normalization must come AFTER the swap: 1-z maps [-1,1]→[2,0], breaking
-        # unit length. Re-normalize to restore unit normals.
-        normal_prenorm = F.normalize(normal_avg, dim=1)
-        normal_swapped = torch.stack([
-            normal_prenorm[:, 0],
-            1 - normal_prenorm[:, 2],
-            1 - normal_prenorm[:, 1],
+        # Match pixel3dmm reference exactly:
+        # network_inference.py saves normals as PNG in [0,1] after coordinate swap,
+        # tracker.py loads them back via (pixel/255 - 0.5)*2 → [-1,1].
+        # We replicate the full save→load chain in one pass:
+        #   1. L2 normalize raw output
+        #   2. Map [-1,1] → [0,1]: (x+1)/2
+        #   3. Coordinate swap in [0,1] space: [x, 1-z, 1-y]
+        #   4. Map back [0,1] → [-1,1]: x*2-1
+        # This is equivalent to what the tracker sees in batch['normals'].
+        normal_unit = F.normalize(normal_avg, dim=1)                     # [B, 3, H, W]
+        normal_01 = torch.clamp((normal_unit + 1) / 2, 0, 1)            # [-1,1] → [0,1]
+        normal_swapped_01 = torch.stack([
+            normal_01[:, 0],          # x stays
+            1 - normal_01[:, 2],      # 1-z in [0,1] space
+            1 - normal_01[:, 1],      # 1-y in [0,1] space
         ], dim=1)
-        normal_map_swapped = F.normalize(normal_swapped, dim=1)
+        # Map back to [-1,1] (matching tracker.py L1543: (pixel/255 - 0.5)*2)
+        normal_map = normal_swapped_01 * 2 - 1
 
-        return uv_map, normal_map_swapped
+        return uv_map, normal_map

@@ -119,7 +119,9 @@ class LossAggregator:
             # Silhouette
             if c.w_sil > 0 and 'rendered_mask' in kwargs:
                 losses['sil'] = c.w_sil * silhouette_loss(
-                    kwargs['rendered_mask'], kwargs['face_mask'],
+                    kwargs['rendered_mask'],
+                    kwargs.get('sil_fg_mask', kwargs['face_mask']),
+                    valid_bg_mask=kwargs.get('sil_valid_bg_mask'),
                 )
 
             # Contour / PRDL (A/B switch) — skip if both weights are 0

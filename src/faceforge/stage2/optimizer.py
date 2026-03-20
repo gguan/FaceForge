@@ -42,7 +42,8 @@ STAGE_PARAMS = {
 }
 
 # Large params decay faster (pose/camera), small params decay slower (shape/exp)
-LARGE_PARAMS = {'head_pose', 'jaw_pose', 'translation', 'focal_length'}
+# Ref: pixel3dmm tracker.py — t, R, jaw are "large"; focal_length is "small"
+LARGE_PARAMS = {'head_pose', 'jaw_pose', 'translation'}
 
 STAGE_ORDER = ['coarse_lmk', 'coarse_uv', 'medium', 'fine_pca', 'fine_detail']
 
@@ -143,15 +144,21 @@ class Stage2Optimizer:
                     tensor.requires_grad_(name in active_per)
 
     @staticmethod
-    def adjust_lr(optimizer: torch.optim.Optimizer, progress: float):
+    def adjust_lr(optimizer: torch.optim.Optimizer, progress: float,
+                  is_joint: bool = False):
         """Dynamic LR decay based on progress within a stage.
 
         Ref: pixel3dmm tracker.py L1076-1098
+        NOTE: pixel3dmm only applies LR decay during joint (multi-frame) optimization.
+        For single-frame stages, call with is_joint=False (default) to skip decay.
 
         Args:
             optimizer: Adam optimizer
             progress: step / total_steps (0.0 to 1.0)
+            is_joint: True for multi-frame joint optimization (enables decay)
         """
+        if not is_joint:
+            return  # pixel3dmm only decays in joint stage
         for group in optimizer.param_groups:
             base_lr = group.get('initial_lr', group['lr'])
             name = group.get('name', '')

@@ -303,6 +303,14 @@ class Stage2Pipeline:
         )
 
         if render_out:
+            # Construct pixel3dmm-style silhouette masks from segmentation
+            seg = preprocessed.face_segmentation.to(self.device)  # [1, H, W]
+            # fg_mask: pixel3dmm uses (seg==2)|(seg==6-10)|(seg==12)|(seg==13)
+            sil_fg = ((seg == 2) | ((seg >= 6) & (seg <= 10)) |
+                      (seg == 12) | (seg == 13)).float()
+            # valid_bg: pixel3dmm only penalizes in background pixels (seg <= 1)
+            sil_bg = (seg <= 1).float()
+
             loss_kwargs.update(
                 rendered_image=render_out.get('image'),
                 rendered_normals=render_out.get('normal'),
@@ -310,7 +318,9 @@ class Stage2Pipeline:
                 target_image=preprocessed.target_image.to(self.device),
                 predicted_normals=preprocessed.pixel3dmm_normals.to(self.device),
                 target_arcface_feat=preprocessed.arcface_feat.to(self.device),
-                cam_rotation=RT[:, :3, :3],  # for normal_loss: rotate rendered normals back to FLAME space
+                cam_rotation=RT[:, :3, :3],
+                sil_fg_mask=sil_fg,
+                sil_valid_bg_mask=sil_bg,
             )
 
         return loss_agg.compute(stage, image_idx=img_idx, **loss_kwargs)

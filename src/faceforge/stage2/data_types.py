@@ -7,8 +7,9 @@ import torch
 class PreprocessedData:
     """每图一份, Pixel3DMM 一次性预处理结果"""
     pixel3dmm_uv: torch.Tensor        # [1, 2, 512, 512] UV prediction [0,1]
-    pixel3dmm_normals: torch.Tensor    # [1, 3, 512, 512] unit normals
+    pixel3dmm_normals: torch.Tensor    # [1, 3, 512, 512] normals [-1,1] with coord swap
     face_mask: torch.Tensor            # [1, 512, 512] binary
+    face_segmentation: torch.Tensor    # [1, 512, 512] int, 19-class BiSeNet
     target_image: torch.Tensor         # [1, 3, 512, 512] aligned image
     target_lmks_68: torch.Tensor       # [1, 68, 2] pixel coords
     target_lmks_eyes: torch.Tensor     # [1, 10, 2] pixel coords
