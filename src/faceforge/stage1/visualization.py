@@ -274,11 +274,8 @@ class Stage1Visualizer:
         lmks_68: np.ndarray | None,
         vertices: np.ndarray | None,
         faces: np.ndarray | None,
-        deca_cam: np.ndarray | None = None,
-        deca_crop_tform: np.ndarray | None = None,
-        align_M: np.ndarray | None = None,
-        device: str | None = None,
         flame_lmks_3d: np.ndarray | None = None,
+        device: str | None = None,
     ) -> np.ndarray:
         """Save a horizontal summary strip (flame-head-tracker / pixel3dmm style).
 
@@ -290,11 +287,8 @@ class Stage1Visualizer:
             lmks_68: [68, 2] landmarks in aligned image coords (optional)
             vertices: [N, 3] posed FLAME mesh vertices in meters (optional)
             faces: [M, 3] FLAME mesh face indices (optional)
-            deca_cam: [1, 3] DECA orthographic camera [scale, tx, ty] (optional)
-            deca_crop_tform: [3, 3] similarity transform original→DECA crop (optional)
-            align_M: [3, 3] projective transform original→aligned image (optional)
+            flame_lmks_3d: [68, 3] FLAME 3D landmarks (for projection fitting)
             device: torch device string for PyTorch3D rendering (optional)
-            flame_lmks_3d: [68, 3] FLAME 3D landmarks for diagnostic overlay (optional)
 
         Returns:
             The summary strip as RGB uint8 [size, size*4, 3]
@@ -347,16 +341,17 @@ class Stage1Visualizer:
                     p2 = lmks_68[contour[0]]
                     cv2.line(lmk_vis, (int(p1[0]), int(p1[1])),
                              (int(p2[0]), int(p2[1])), (0, 255, 0), 1)
-            # Diagnostic: project FLAME 3D landmarks via DECA cam chain (red)
-            # If flame_lmks_3d is provided, project them and overlay to verify
-            # alignment between DECA projection (red) and MediaPipe detection (green)
-            if (flame_lmks_3d is not None and deca_cam is not None
-                    and deca_crop_tform is not None and align_M is not None):
-                flame_lmks_2d = _project_vertices_deca(
-                    flame_lmks_3d, deca_cam, deca_crop_tform, align_M,
+            # Diagnostic: project FLAME 3D landmarks via similarity fit (red)
+            # Red dots = FLAME landmarks projected to aligned image
+            # Green dots = MediaPipe detected landmarks
+            # Overlap means projection is correct
+            if flame_lmks_3d is not None:
+                flame_lmks_2d = _project_vertices_similarity(
+                    flame_lmks_3d, flame_lmks_3d, lmks_68,
                 )
-                for pt in flame_lmks_2d:
-                    cv2.circle(lmk_vis, (int(pt[0]), int(pt[1])), 2, (255, 0, 0), -1)
+                if flame_lmks_2d is not None:
+                    for pt in flame_lmks_2d:
+                        cv2.circle(lmk_vis, (int(pt[0]), int(pt[1])), 2, (255, 0, 0), -1)
             panels.append(_resize(lmk_vis))
         else:
             panels.append(np.zeros((size, size, 3), dtype=np.uint8))
@@ -365,21 +360,26 @@ class Stage1Visualizer:
         if vertices is not None and faces is not None:
             img_size = aligned_image.shape[0]
             can_render = (
-                deca_cam is not None
-                and deca_crop_tform is not None
-                and align_M is not None
+                flame_lmks_3d is not None
+                and lmks_68 is not None
                 and device is not None
             )
             if can_render:
-                pts_2d = _project_vertices_deca(
-                    vertices, deca_cam, deca_crop_tform, align_M,
+                # Direct projection: fit similarity transform from FLAME 3D
+                # landmarks to detected 2D landmarks, apply to all vertices
+                pts_2d = _project_vertices_similarity(
+                    vertices, flame_lmks_3d, lmks_68,
                 )
-                scale = float(deca_cam[0, 0])
-                verts_ndc = _compute_ndc_from_pixels(vertices, pts_2d, scale, img_size)
-                rendered, _ = _render_mesh_phong(
-                    vertices, verts_ndc, faces, device, render_size=img_size,
-                )
-                mesh_vis = cv2.addWeighted(aligned_image, 0.4, rendered, 0.6, 0)
+                if pts_2d is not None:
+                    verts_ndc = _compute_ndc_from_pixels_direct(
+                        vertices, pts_2d, img_size,
+                    )
+                    rendered, _ = _render_mesh_phong(
+                        vertices, verts_ndc, faces, device, render_size=img_size,
+                    )
+                    mesh_vis = cv2.addWeighted(aligned_image, 0.4, rendered, 0.6, 0)
+                else:
+                    mesh_vis = aligned_image.copy()
             else:
                 # Fallback: wireframe
                 mesh_vis = aligned_image.copy()
@@ -413,6 +413,83 @@ def save_summary_grid(
     grid = np.concatenate(summaries, axis=0)
     cv2.imwrite(output_path, cv2.cvtColor(grid, cv2.COLOR_RGB2BGR))
 
+
+
+def _project_vertices_similarity(
+    vertices: np.ndarray,
+    flame_lmks_3d: np.ndarray,
+    lmks_2d: np.ndarray,
+) -> np.ndarray | None:
+    """Project FLAME vertices to 2D by fitting a similarity transform.
+
+    Fits scale + rotation + translation from FLAME 3D landmarks (x, -y)
+    to detected 2D landmarks using cv2.estimateAffinePartial2D (RANSAC).
+    Then applies the same transform to all mesh vertices.
+
+    This is the simplest correct approach: no DECA camera chain needed,
+    just direct 3D-landmark-to-2D-landmark correspondence.
+
+    Args:
+        vertices: [V, 3] FLAME mesh vertices in meters
+        flame_lmks_3d: [68, 3] FLAME 3D landmark positions
+        lmks_2d: [68, 2] detected 2D landmarks in aligned image
+
+    Returns:
+        [V, 2] projected 2D pixel coordinates, or None on failure
+    """
+    # Use interior landmarks only (17-67) to avoid jawline contour mismatch.
+    # FLAME's seletec_3d68 gives static jawline positions, but 2D detectors
+    # use dynamic contour (visible silhouette), causing mismatch at non-frontal.
+    interior = slice(17, 68)
+
+    # FLAME: x=right, y=up → image: x=right, y=down
+    src = np.stack([
+        flame_lmks_3d[interior, 0],
+        -flame_lmks_3d[interior, 1],
+    ], axis=1).astype(np.float32)
+
+    dst = lmks_2d[interior, :2].astype(np.float32)
+
+    # estimateAffinePartial2D: 4 DOF (scale, rotation, tx, ty) with RANSAC
+    M, inliers = cv2.estimateAffinePartial2D(src, dst, method=cv2.RANSAC)
+    if M is None:
+        return None
+
+    # Apply to all vertices
+    verts_xy = np.stack([vertices[:, 0], -vertices[:, 1]], axis=1).astype(np.float32)
+    # M is [2, 3]: dst = M @ [x, y, 1]^T
+    ones = np.ones((verts_xy.shape[0], 1), dtype=np.float32)
+    verts_h = np.concatenate([verts_xy, ones], axis=1)  # [V, 3]
+    pts_2d = (M @ verts_h.T).T  # [V, 2]
+    return pts_2d
+
+
+def _compute_ndc_from_pixels_direct(
+    vertices: np.ndarray,
+    pts_2d: np.ndarray,
+    image_size: int,
+) -> np.ndarray:
+    """Convert projected 2D pixels + FLAME z to NDC for PyTorch3D rendering.
+
+    Uses the fitted similarity transform scale for z-depth computation.
+
+    Args:
+        vertices: [V, 3] FLAME world-space vertices
+        pts_2d: [V, 2] projected pixel coordinates in aligned image
+        image_size: aligned image dimension
+
+    Returns:
+        [V, 3] NDC coordinates
+    """
+    ndc_xy = pts_2d / image_size * 2.0 - 1.0
+    # Estimate effective scale from the projection (pixels per meter)
+    # Use the range of projected x to estimate
+    verts_x_range = vertices[:, 0].max() - vertices[:, 0].min()
+    pts_x_range = pts_2d[:, 0].max() - pts_2d[:, 0].min()
+    eff_scale = pts_x_range / max(verts_x_range, 1e-8)
+    # z: closer vertices (larger FLAME z) → smaller NDC z
+    ndc_z = -eff_scale * vertices[:, 2] / image_size * 2.0
+    return np.stack([ndc_xy[:, 0], ndc_xy[:, 1], ndc_z], axis=1)
 
 
 def _compute_vertex_normals(

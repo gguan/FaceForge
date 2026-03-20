@@ -165,7 +165,6 @@ class Stage1Pipeline:
                 image_rgb,
             )
 
-            # Extract FLAME 3D landmarks for diagnostic overlay
             flame_lmks_3d = self._get_flame_landmarks_3d(verts_for_vis)
 
             summary_strip = vis.save_summary(
@@ -174,11 +173,8 @@ class Stage1Pipeline:
                 lmks_68=lmks_68_aligned,
                 vertices=verts_for_vis,
                 faces=faces,
-                deca_cam=deca_result['cam'].numpy(),
-                deca_crop_tform=deca_result['crop_tform'],
-                align_M=align_M,
-                device=config.device,
                 flame_lmks_3d=flame_lmks_3d,
+                device=config.device,
             )
 
         # Build Stage1Output
