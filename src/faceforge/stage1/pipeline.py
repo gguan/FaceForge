@@ -295,15 +295,27 @@ class Stage1Pipeline:
         Returns:
             [5023, 3] posed vertices in meters, or None on failure
         """
+        import traceback
         try:
             flame = self.mica.model.flame
             device = next(flame.parameters()).device
 
             shape = flame_params['shape'].to(device)  # [1, 300]
 
-            # MICA's FLAME is configured with n_exp (typically 50).
-            # Truncate expression to match the model's expected dimension.
-            n_exp = flame.cfg.model.n_exp if hasattr(flame, 'cfg') else 50
+            # Detect expression dimension from FLAME model
+            n_exp = getattr(getattr(getattr(flame, 'cfg', None), 'model', None), 'n_exp', None)
+            if n_exp is None:
+                # Fallback: check shapedirs dimension
+                if hasattr(flame, 'shapedirs'):
+                    # shapedirs: [V, 3, n_shape + n_exp], expression part starts after shape
+                    n_shape = shape.shape[1]
+                    total = flame.shapedirs.shape[2]
+                    n_exp = total - n_shape
+                    print(f'[Stage1] Detected n_exp={n_exp} from shapedirs (total={total}, n_shape={n_shape})')
+                else:
+                    n_exp = 50
+                    print(f'[Stage1] Using default n_exp={n_exp}')
+
             exp = flame_params['exp'][:, :n_exp].to(device)
 
             # Reconstruct pose [1, 6] = head_pose + jaw_pose
@@ -312,6 +324,8 @@ class Stage1Pipeline:
                 flame_params['jaw_pose'].to(device),
             ], dim=1)
 
+            print(f'[Stage1] FLAME forward: shape={shape.shape}, exp={exp.shape}, pose={pose.shape}, device={device}')
+
             verts, _, _ = flame(
                 shape_params=shape,
                 expression_params=exp,
@@ -319,7 +333,8 @@ class Stage1Pipeline:
             )
             return verts.squeeze(0).cpu().numpy()  # [5023, 3]
         except Exception as e:
-            print(f'[Stage1] Warning: FLAME posed vertices failed ({e}), using canonical.')
+            print(f'[Stage1] FLAME posed vertices FAILED:')
+            traceback.print_exc()
             return None
 
     @torch.no_grad()
