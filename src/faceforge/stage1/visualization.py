@@ -618,12 +618,16 @@ def _compute_deca_vertex_colors(
     base = DECA_MESH_COLOR
     albedo = torch.full((n_verts, 3), base, device=device)
 
+    # Flip inward-pointing normals (inner mouth/eye cavity) so they get lit
+    # instead of appearing as black patches. Same effect as DECA's pos_mask.
+    normals = normals.clone()
+    normals[normals[:, 2] < 0] *= -1
+
     # 5 directional lights, each with intensity 1.7
     light_dirs = torch.tensor(DECA_LIGHT_DIRS, dtype=torch.float32, device=device)  # [5, 3]
     light_dirs = torch.nn.functional.normalize(light_dirs, dim=1)
 
     # Lambert: shading = mean_over_lights( max(0, n·l) * intensity )
-    # normals: [V, 3], light_dirs: [5, 3]
     n_dot_l = torch.clamp(
         torch.einsum('vc,lc->vl', normals, light_dirs), min=0.0, max=1.0,
     )  # [V, 5]
@@ -675,7 +679,6 @@ def _render_mesh_phong(
 
     raster_settings = RasterizationSettings(
         image_size=512, blur_radius=0.0, faces_per_pixel=1,
-        cull_backfaces=True,  # hide FLAME inner mouth/eye cavity
     )
     # Full ambient lights (shading already baked into vertex colors)
     lights = PointLights(
