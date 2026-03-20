@@ -302,19 +302,20 @@ class Stage1Pipeline:
 
             shape = flame_params['shape'].to(device)  # [1, 300]
 
-            # Detect expression dimension from FLAME model
-            n_exp = getattr(getattr(getattr(flame, 'cfg', None), 'model', None), 'n_exp', None)
-            if n_exp is None:
-                # Fallback: check shapedirs dimension
-                if hasattr(flame, 'shapedirs'):
-                    # shapedirs: [V, 3, n_shape + n_exp], expression part starts after shape
-                    n_shape = shape.shape[1]
-                    total = flame.shapedirs.shape[2]
-                    n_exp = total - n_shape
-                    print(f'[Stage1] Detected n_exp={n_exp} from shapedirs (total={total}, n_shape={n_shape})')
-                else:
-                    n_exp = 50
-                    print(f'[Stage1] Using default n_exp={n_exp}')
+            # Expression dimension lives in different places across FLAME wrappers.
+            # Prefer explicit config when present, otherwise infer from shapedirs.
+            n_exp = None
+            if hasattr(flame, 'cfg'):
+                model_cfg = getattr(flame.cfg, 'model', None)
+                if model_cfg is not None and hasattr(model_cfg, 'n_exp'):
+                    n_exp = model_cfg.n_exp
+                elif hasattr(flame.cfg, 'n_exp'):
+                    n_exp = flame.cfg.n_exp
+            if n_exp is None and hasattr(flame, 'shapedirs') and hasattr(flame, 'n_shape'):
+                total_dims = flame.shapedirs.shape[-1]
+                n_exp = max(0, int(total_dims) - int(flame.n_shape))
+            if n_exp is None or n_exp <= 0:
+                n_exp = flame_params['exp'].shape[1]
 
             exp = flame_params['exp'][:, :n_exp].to(device)
 
