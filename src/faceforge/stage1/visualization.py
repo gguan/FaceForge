@@ -7,6 +7,17 @@ import os
 
 import cv2
 import numpy as np
+import torch
+from pytorch3d.renderer import (
+    MeshRasterizer,
+    MeshRenderer,
+    OrthographicCameras,
+    PointLights,
+    RasterizationSettings,
+    SoftPhongShader,
+    TexturesVertex,
+)
+from pytorch3d.structures import Meshes
 
 
 # Color palette for 19-class face parsing visualization
@@ -266,10 +277,11 @@ class Stage1Visualizer:
         deca_cam: np.ndarray | None = None,
         deca_crop_tform: np.ndarray | None = None,
         align_M: np.ndarray | None = None,
+        device: str | None = None,
     ) -> np.ndarray:
         """Save a horizontal summary strip (flame-head-tracker / pixel3dmm style).
 
-        Panels: aligned | segmentation | landmarks overlay | mesh wireframe overlay
+        Panels: aligned | segmentation | landmarks overlay | mesh overlay
 
         Args:
             aligned_image: [H, W, 3] RGB uint8 aligned crop
@@ -280,6 +292,7 @@ class Stage1Visualizer:
             deca_cam: [1, 3] DECA orthographic camera [scale, tx, ty] (optional)
             deca_crop_tform: [3, 3] similarity transform original→DECA crop (optional)
             align_M: [3, 3] projective transform original→aligned image (optional)
+            device: torch device string for PyTorch3D rendering (optional)
 
         Returns:
             The summary strip as RGB uint8 [size, size*4, 3]
@@ -333,18 +346,30 @@ class Stage1Visualizer:
         else:
             panels.append(np.zeros((size, size, 3), dtype=np.uint8))
 
-        # Panel 4: Mesh wireframe overlay (posed FLAME mesh)
+        # Panel 4: Solid mesh overlay (flame-head-tracker style Phong shading)
         if vertices is not None and faces is not None:
-            mesh_vis = aligned_image.copy()
-            if deca_cam is not None and deca_crop_tform is not None and align_M is not None:
-                # Use DECA camera → crop → original → aligned projection chain
+            img_size = aligned_image.shape[0]
+            can_render = (
+                deca_cam is not None
+                and deca_crop_tform is not None
+                and align_M is not None
+                and device is not None
+            )
+            if can_render:
                 pts_2d = _project_vertices_deca(
                     vertices, deca_cam, deca_crop_tform, align_M,
                 )
+                scale = float(deca_cam[0, 0])
+                verts_ndc = _compute_ndc_from_pixels(vertices, pts_2d, scale, img_size)
+                rendered, _ = _render_mesh_phong(
+                    vertices, verts_ndc, faces, device, render_size=img_size,
+                )
+                mesh_vis = cv2.addWeighted(aligned_image, 0.4, rendered, 0.6, 0)
             else:
-                # Fallback to naive fit-to-bounds projection
-                pts_2d = _project_vertices_ortho(vertices, aligned_image.shape[0])
-            _draw_wireframe(mesh_vis, pts_2d, faces, color=(0, 255, 255), thickness=1)
+                # Fallback: wireframe
+                mesh_vis = aligned_image.copy()
+                pts_2d = _project_vertices_ortho(vertices, img_size)
+                _draw_wireframe(mesh_vis, pts_2d, faces, color=(0, 255, 255), thickness=1)
             panels.append(_resize(mesh_vis))
         else:
             panels.append(np.zeros((size, size, 3), dtype=np.uint8))
@@ -372,6 +397,137 @@ def save_summary_grid(
         return
     grid = np.concatenate(summaries, axis=0)
     cv2.imwrite(output_path, cv2.cvtColor(grid, cv2.COLOR_RGB2BGR))
+
+
+def _compute_vertex_normals(
+    verts: torch.Tensor,
+    faces: torch.Tensor,
+) -> torch.Tensor:
+    """Compute per-vertex normals by accumulating face normals.
+
+    Ported from flame-head-tracker utils/graphics_utils.py.
+
+    Args:
+        verts: [V, 3] vertex positions
+        faces: [F, 3] face indices
+
+    Returns:
+        [V, 3] unit-length vertex normals
+    """
+    v0 = verts[faces[:, 0]]
+    v1 = verts[faces[:, 1]]
+    v2 = verts[faces[:, 2]]
+    face_normals = torch.cross(v1 - v0, v2 - v0)
+    face_normals = face_normals / (face_normals.norm(dim=-1, keepdim=True) + 1e-8)
+    normals = torch.zeros_like(verts)
+    normals.index_add_(0, faces[:, 0], face_normals)
+    normals.index_add_(0, faces[:, 1], face_normals)
+    normals.index_add_(0, faces[:, 2], face_normals)
+    normals = normals / (normals.norm(dim=-1, keepdim=True) + 1e-8)
+    return normals
+
+
+@torch.no_grad()
+def _render_mesh_phong(
+    vertices: np.ndarray,
+    verts_ndc: np.ndarray,
+    faces: np.ndarray,
+    device: str,
+    render_size: int = 256,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Render solid Phong-shaded mesh via PyTorch3D.
+
+    Ported from flame-head-tracker utils/general_utils.py render_geometry().
+
+    Args:
+        vertices: [V, 3] world-space FLAME vertices (for normal computation)
+        verts_ndc: [V, 3] NDC coordinates (for rasterization position)
+        faces: [F, 3] face indices
+        device: torch device string (e.g. 'cuda:0')
+        render_size: output image size
+
+    Returns:
+        (rendered_img [H, W, 3] uint8 RGB, foreground_mask [H, W] uint8)
+    """
+    faces_t = torch.from_numpy(faces).to(device)
+    verts_t = torch.from_numpy(vertices).float().to(device)
+    verts_ndc_t = torch.from_numpy(verts_ndc).float().to(device)
+
+    # Compute vertex normals from world-space geometry
+    normals = _compute_vertex_normals(verts_t, faces_t)
+
+    # Per-vertex Phong shading (same as flame-head-tracker)
+    light_pos = torch.tensor([0.0, 0.0, 10.0], device=device)
+    camera_pos = torch.tensor([0.0, 0.0, 10.0], device=device)
+    ambient_color = torch.tensor([0.1, 0.1, 0.1], device=device)
+    diffuse_color = torch.tensor([0.8, 0.8, 0.8], device=device)
+    base_color = torch.ones_like(verts_t)
+
+    light_dir = light_pos - verts_t
+    light_dir = light_dir / (light_dir.norm(dim=-1, keepdim=True) + 1e-8)
+
+    # Ambient + diffuse (no specular, same as flame-head-tracker)
+    ambient = ambient_color * base_color
+    diff = torch.clamp((normals * light_dir).sum(-1, keepdim=True), min=0.0)
+    diffuse = diffuse_color * base_color * diff
+    vertex_color = torch.clamp(ambient + diffuse, 0.0, 1.0)
+
+    # Build PyTorch3D mesh with baked vertex colors
+    mesh = Meshes(verts=verts_ndc_t[None], faces=faces_t[None])
+    mesh.textures = TexturesVertex(verts_features=vertex_color[None])
+
+    # OrthographicCameras: identity with x,y flipped (same as flame-head-tracker)
+    R = torch.eye(3, device=device)
+    R[0, 0] = -1.0
+    R[1, 1] = -1.0
+    cameras = OrthographicCameras(device=device, R=R[None], T=torch.zeros(1, 3, device=device))
+
+    raster_settings = RasterizationSettings(
+        image_size=512, blur_radius=0.0, faces_per_pixel=1,
+    )
+    # Full ambient lights (shading already baked into vertex colors)
+    lights = PointLights(
+        device=device, location=[[0.0, 0.0, 0.0]],
+        ambient_color=[[1.0, 1.0, 1.0]],
+        diffuse_color=[[0.0, 0.0, 0.0]],
+        specular_color=[[0.0, 0.0, 0.0]],
+    )
+    renderer = MeshRenderer(
+        rasterizer=MeshRasterizer(cameras=cameras, raster_settings=raster_settings),
+        shader=SoftPhongShader(device=device, cameras=cameras, lights=lights),
+    )
+
+    image = renderer(mesh)
+    alpha = image[0, ..., 3].cpu().numpy()
+    foreground_mask = (alpha > 0).astype(np.uint8)
+    image = (image[0, ..., :3].cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
+
+    image = cv2.resize(image, (render_size, render_size))
+    foreground_mask = cv2.resize(foreground_mask, (render_size, render_size))
+    return image, foreground_mask
+
+
+def _compute_ndc_from_pixels(
+    vertices: np.ndarray,
+    pts_2d: np.ndarray,
+    deca_scale: float,
+    image_size: int,
+) -> np.ndarray:
+    """Convert projected 2D pixel coords + FLAME z to NDC for PyTorch3D.
+
+    Args:
+        vertices: [V, 3] FLAME world-space vertices (need z for depth)
+        pts_2d: [V, 2] projected pixel coordinates in aligned image
+        deca_scale: DECA camera scale parameter
+        image_size: aligned image dimension
+
+    Returns:
+        [V, 3] NDC coordinates for PyTorch3D rendering
+    """
+    ndc_xy = pts_2d / image_size * 2.0 - 1.0
+    # z: closer vertices (larger FLAME z) should have smaller NDC z
+    ndc_z = -deca_scale * vertices[:, 2]
+    return np.stack([ndc_xy[:, 0], ndc_xy[:, 1], ndc_z], axis=1)
 
 
 def _project_vertices_deca(

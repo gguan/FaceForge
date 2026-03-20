@@ -174,6 +174,7 @@ class Stage1Pipeline:
                 deca_cam=deca_result['cam'].numpy(),
                 deca_crop_tform=deca_result['crop_tform'],
                 align_M=align_M,
+                device=config.device,
             )
 
         # Build Stage1Output
