@@ -11,6 +11,7 @@ import numpy as np
 import torch
 
 from .config import Stage1Config
+from .paths import get_deca_topology_path
 from faceforge._paths import PROJECT_ROOT
 
 
@@ -48,7 +49,7 @@ class DECAInference:
 
         # FLAME model files
         flame_dir = os.path.join(models_dir, 'FLAME2020')
-        deca_cfg.model.topology_path = os.path.join(flame_dir, 'head_template.obj')
+        deca_cfg.model.topology_path = get_deca_topology_path()
         deca_cfg.model.flame_lmk_embedding_path = os.path.join(flame_dir, 'landmark_embedding.npy')
         deca_cfg.model.flame_model_path = os.path.join(
             project_root, config.flame_model_path,

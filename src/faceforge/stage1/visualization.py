@@ -43,6 +43,14 @@ PARSING_COLORS = np.array([
     [0, 204, 0],      # 18: hat
 ], dtype=np.uint8)
 
+MESH_BASE_COLOR_RGB = (0.82, 0.82, 0.82)
+MESH_BASE_WEIGHT = 0.07
+MESH_OVERLAY_WEIGHT = 0.93
+MESH_SHADE_MIN = 0.94
+MESH_SHADE_MAX = 1.00
+MESH_EDGE_DARKEN = 0.82
+MESH_EDGE_WIDTH = 2
+
 
 class Stage1Visualizer:
     """Saves debug visualizations for each Stage 1 step."""
@@ -288,6 +296,9 @@ class Stage1Visualizer:
         faces: np.ndarray | None,
         flame_lmks_3d: np.ndarray | None = None,
         device: str | None = None,
+        deca_cam: np.ndarray | None = None,
+        deca_crop_tform: np.ndarray | None = None,
+        align_M: np.ndarray | None = None,
     ) -> np.ndarray:
         """Save a horizontal summary strip (flame-head-tracker / pixel3dmm style).
 
@@ -301,6 +312,9 @@ class Stage1Visualizer:
             faces: [M, 3] FLAME mesh face indices (optional)
             flame_lmks_3d: [68, 3] FLAME 3D landmarks (for projection fitting)
             device: torch device string for PyTorch3D rendering (optional)
+            deca_cam: [1, 3] DECA orthographic camera [scale, tx, ty]
+            deca_crop_tform: [3, 3] original image -> DECA crop transform
+            align_M: [3, 3] original image -> aligned image transform
 
         Returns:
             The summary strip as RGB uint8 [size, size*4, 3]
@@ -323,7 +337,7 @@ class Stage1Visualizer:
 
         # Panel 3: Landmarks on aligned image
         #   Green = MediaPipe detected 2D landmarks
-        #   Red   = FLAME 3D landmarks projected via DECA cam (diagnostic)
+        #   Red   = FLAME 3D landmarks projected to aligned image (diagnostic)
         if lmks_68 is not None:
             lmk_vis = aligned_image.copy()
             # Draw detected landmarks (green)
@@ -353,14 +367,20 @@ class Stage1Visualizer:
                     p2 = lmks_68[contour[0]]
                     cv2.line(lmk_vis, (int(p1[0]), int(p1[1])),
                              (int(p2[0]), int(p2[1])), (0, 255, 0), 1)
-            # Diagnostic: project FLAME 3D landmarks via similarity fit (red)
+            # Diagnostic: project FLAME 3D landmarks to aligned image (red)
             # Red dots = FLAME landmarks projected to aligned image
             # Green dots = MediaPipe detected landmarks
             # Overlap means projection is correct
             if flame_lmks_3d is not None:
-                flame_lmks_2d = _project_vertices_similarity(
-                    flame_lmks_3d, flame_lmks_3d, lmks_68,
-                )
+                flame_lmks_2d = None
+                if deca_cam is not None and deca_crop_tform is not None and align_M is not None:
+                    flame_lmks_2d = _project_vertices_deca(
+                        flame_lmks_3d, deca_cam, deca_crop_tform, align_M,
+                    )
+                else:
+                    flame_lmks_2d = _project_vertices_similarity(
+                        flame_lmks_3d, flame_lmks_3d, lmks_68,
+                    )
                 if flame_lmks_2d is not None:
                     for pt in flame_lmks_2d:
                         cv2.circle(lmk_vis, (int(pt[0]), int(pt[1])), 2, (255, 0, 0), -1)
@@ -373,23 +393,32 @@ class Stage1Visualizer:
             img_size = aligned_image.shape[0]
             can_render = (
                 flame_lmks_3d is not None
-                and lmks_68 is not None
                 and device is not None
             )
             if can_render:
-                # Direct projection: fit similarity transform from FLAME 3D
-                # landmarks to detected 2D landmarks, apply to all vertices
-                pts_2d = _project_vertices_similarity(
-                    vertices, flame_lmks_3d, lmks_68,
-                )
+                pts_2d = None
+                if deca_cam is not None and deca_crop_tform is not None and align_M is not None:
+                    pts_2d = _project_vertices_deca(
+                        vertices, deca_cam, deca_crop_tform, align_M,
+                    )
+                elif lmks_68 is not None:
+                    pts_2d = _project_vertices_similarity(
+                        vertices, flame_lmks_3d, lmks_68,
+                    )
                 if pts_2d is not None:
                     verts_ndc = _compute_ndc_from_pixels_direct(
                         vertices, pts_2d, img_size,
                     )
-                    rendered, _ = _render_mesh_phong(
+                    rendered, foreground_mask = _render_mesh_phong(
                         vertices, verts_ndc, faces, device, render_size=img_size,
                     )
-                    mesh_vis = cv2.addWeighted(aligned_image, 0.4, rendered, 0.6, 0)
+                    mesh_vis = _blend_overlay_on_mask(
+                        aligned_image,
+                        rendered,
+                        foreground_mask,
+                        base_weight=MESH_BASE_WEIGHT,
+                        overlay_weight=MESH_OVERLAY_WEIGHT,
+                    )
                 else:
                     mesh_vis = aligned_image.copy()
             else:
@@ -425,6 +454,51 @@ def save_summary_grid(
     grid = np.concatenate(summaries, axis=0)
     cv2.imwrite(output_path, cv2.cvtColor(grid, cv2.COLOR_RGB2BGR))
 
+
+
+def _blend_overlay_on_mask(
+    base_image: np.ndarray,
+    overlay_image: np.ndarray,
+    foreground_mask: np.ndarray,
+    base_weight: float = 0.4,
+    overlay_weight: float = 0.6,
+) -> np.ndarray:
+    """Blend overlay only on the rendered foreground region."""
+    blended = base_image.copy()
+    mask = foreground_mask.astype(bool)
+    if mask.ndim == 3:
+        mask = mask[..., 0]
+    if not np.any(mask):
+        return blended
+
+    base_f = base_image.astype(np.float32)
+    overlay_f = overlay_image.astype(np.float32)
+    mixed = (base_f * base_weight + overlay_f * overlay_weight).clip(0, 255).astype(np.uint8)
+    blended[mask] = mixed[mask]
+    return blended
+
+
+def _enhance_mesh_contours(
+    rendered_image: np.ndarray,
+    foreground_mask: np.ndarray,
+) -> np.ndarray:
+    """Darken only the mesh boundary to improve shape readability."""
+    enhanced = rendered_image.copy()
+    mask = foreground_mask.astype(np.uint8)
+    if mask.ndim == 3:
+        mask = mask[..., 0]
+    if not np.any(mask):
+        return enhanced
+
+    kernel = np.ones((MESH_EDGE_WIDTH * 2 + 1, MESH_EDGE_WIDTH * 2 + 1), dtype=np.uint8)
+    eroded = cv2.erode(mask, kernel, iterations=1)
+    contour = mask.astype(bool) & ~eroded.astype(bool)
+    if not np.any(contour):
+        return enhanced
+
+    enhanced_f = enhanced.astype(np.float32)
+    enhanced_f[contour] *= MESH_EDGE_DARKEN
+    return enhanced_f.clip(0, 255).astype(np.uint8)
 
 
 def _project_vertices_similarity(
@@ -535,7 +609,7 @@ def _compute_vertex_normals(
     v0 = verts[faces[:, 0]]
     v1 = verts[faces[:, 1]]
     v2 = verts[faces[:, 2]]
-    face_normals = torch.cross(v1 - v0, v2 - v0)
+    face_normals = torch.cross(v1 - v0, v2 - v0, dim=1)
     face_normals = face_normals / (face_normals.norm(dim=-1, keepdim=True) + 1e-8)
     normals = torch.zeros_like(verts)
     normals.index_add_(0, faces[:, 0], face_normals)
@@ -543,6 +617,19 @@ def _compute_vertex_normals(
     normals.index_add_(0, faces[:, 2], face_normals)
     normals = normals / (normals.norm(dim=-1, keepdim=True) + 1e-8)
     return normals
+
+
+def _compute_soft_vertex_colors(
+    normals: torch.Tensor,
+    device: str,
+) -> torch.Tensor:
+    """Return softly shaded mesh colors with a high brightness floor."""
+    num_vertices = normals.shape[0]
+    base_color = torch.tensor(MESH_BASE_COLOR_RGB, dtype=torch.float32, device=device).view(1, 3)
+    light_dir = torch.tensor([0.0, 0.0, 1.0], dtype=torch.float32, device=device).view(1, 3)
+    diffuse = torch.clamp((normals * light_dir).sum(dim=1, keepdim=True), min=0.0, max=1.0)
+    shade = MESH_SHADE_MIN + (MESH_SHADE_MAX - MESH_SHADE_MIN) * diffuse
+    return base_color.expand(num_vertices, 3) * shade
 
 
 @torch.no_grad()
@@ -573,22 +660,7 @@ def _render_mesh_phong(
 
     # Compute vertex normals from world-space geometry
     normals = _compute_vertex_normals(verts_t, faces_t)
-
-    # Per-vertex Phong shading (same as flame-head-tracker)
-    light_pos = torch.tensor([0.0, 0.0, 10.0], device=device)
-    camera_pos = torch.tensor([0.0, 0.0, 10.0], device=device)
-    ambient_color = torch.tensor([0.1, 0.1, 0.1], device=device)
-    diffuse_color = torch.tensor([0.8, 0.8, 0.8], device=device)
-    base_color = torch.ones_like(verts_t)
-
-    light_dir = light_pos - verts_t
-    light_dir = light_dir / (light_dir.norm(dim=-1, keepdim=True) + 1e-8)
-
-    # Ambient + diffuse (no specular, same as flame-head-tracker)
-    ambient = ambient_color * base_color
-    diff = torch.clamp((normals * light_dir).sum(-1, keepdim=True), min=0.0)
-    diffuse = diffuse_color * base_color * diff
-    vertex_color = torch.clamp(ambient + diffuse, 0.0, 1.0)
+    vertex_color = _compute_soft_vertex_colors(normals, device=device)
 
     # Build PyTorch3D mesh with baked vertex colors
     mesh = Meshes(verts=verts_ndc_t[None], faces=faces_t[None])
@@ -619,6 +691,7 @@ def _render_mesh_phong(
     alpha = image[0, ..., 3].cpu().numpy()
     foreground_mask = (alpha > 0).astype(np.uint8)
     image = (image[0, ..., :3].cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
+    image = _enhance_mesh_contours(image, foreground_mask)
 
     image = cv2.resize(image, (render_size, render_size))
     foreground_mask = cv2.resize(foreground_mask, (render_size, render_size))

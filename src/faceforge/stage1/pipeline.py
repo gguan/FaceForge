@@ -189,6 +189,9 @@ class Stage1Pipeline:
                 faces=faces,
                 flame_lmks_3d=flame_lmks_3d,
                 device=config.device,
+                deca_cam=deca_result['cam'].numpy(),
+                deca_crop_tform=deca_result['crop_tform'],
+                align_M=align_M,
             )
 
         # Build Stage1Output

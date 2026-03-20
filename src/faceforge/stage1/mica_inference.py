@@ -14,6 +14,11 @@ import torch
 import torch.nn.functional as F
 
 from .config import Stage1Config
+from .paths import (
+    ensure_file_matches,
+    ensure_inspect_getargspec,
+    ensure_numpy_legacy_aliases,
+)
 from faceforge._paths import PROJECT_ROOT
 
 
@@ -61,6 +66,9 @@ class MICAInference:
         if mica_root not in sys.path:
             sys.path.insert(0, mica_root)
 
+        ensure_inspect_getargspec()
+        ensure_numpy_legacy_aliases()
+
         from configs.config import get_cfg_defaults
         from micalib.models.mica import MICA
 
@@ -75,11 +83,10 @@ class MICAInference:
 
         # MICA's Masking module hardcodes path relative to its own directory:
         #   ROOT_DIR/data/FLAME2020/generic_model.pkl
-        # Create symlink so it can find the file
+        # Mirror the file into the expected location so it can find the file.
         mica_flame_pkl = os.path.join(mica_root, 'data', 'FLAME2020', 'generic_model.pkl')
-        if not os.path.exists(mica_flame_pkl) and os.path.exists(flame_pkl):
-            os.makedirs(os.path.dirname(mica_flame_pkl), exist_ok=True)
-            os.symlink(os.path.abspath(flame_pkl), mica_flame_pkl)
+        if os.path.exists(flame_pkl):
+            ensure_file_matches(os.path.abspath(flame_pkl), mica_flame_pkl)
 
         # Patch torch.load for PyTorch >= 2.6 compatibility and cross-device loading
         original_load = torch.load
