@@ -9,6 +9,7 @@ import cv2
 import numpy as np
 import torch
 from pytorch3d.renderer import (
+    BlendParams,
     MeshRasterizer,
     MeshRenderer,
     OrthographicCameras,
@@ -685,7 +686,10 @@ def _render_mesh_phong(
     )
     renderer = MeshRenderer(
         rasterizer=MeshRasterizer(cameras=cameras, raster_settings=raster_settings),
-        shader=SoftPhongShader(device=device, cameras=cameras, lights=lights),
+        shader=SoftPhongShader(
+            device=device, cameras=cameras, lights=lights,
+            blend_params=BlendParams(background_color=(0.0, 0.0, 0.0)),
+        ),
     )
 
     image = renderer(mesh)
