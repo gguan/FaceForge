@@ -278,6 +278,7 @@ class Stage1Visualizer:
         deca_crop_tform: np.ndarray | None = None,
         align_M: np.ndarray | None = None,
         device: str | None = None,
+        flame_lmks_3d: np.ndarray | None = None,
     ) -> np.ndarray:
         """Save a horizontal summary strip (flame-head-tracker / pixel3dmm style).
 
@@ -293,6 +294,7 @@ class Stage1Visualizer:
             deca_crop_tform: [3, 3] similarity transform original→DECA crop (optional)
             align_M: [3, 3] projective transform original→aligned image (optional)
             device: torch device string for PyTorch3D rendering (optional)
+            flame_lmks_3d: [68, 3] FLAME 3D landmarks for diagnostic overlay (optional)
 
         Returns:
             The summary strip as RGB uint8 [size, size*4, 3]
@@ -314,8 +316,11 @@ class Stage1Visualizer:
             panels.append(np.zeros((size, size, 3), dtype=np.uint8))
 
         # Panel 3: Landmarks on aligned image
+        #   Green = MediaPipe detected 2D landmarks
+        #   Red   = FLAME 3D landmarks projected via DECA cam (diagnostic)
         if lmks_68 is not None:
             lmk_vis = aligned_image.copy()
+            # Draw detected landmarks (green)
             for i, pt in enumerate(lmks_68):
                 cv2.circle(lmk_vis, (int(pt[0]), int(pt[1])), 2, (0, 255, 0), -1)
             # Draw contour connections
@@ -342,6 +347,16 @@ class Stage1Visualizer:
                     p2 = lmks_68[contour[0]]
                     cv2.line(lmk_vis, (int(p1[0]), int(p1[1])),
                              (int(p2[0]), int(p2[1])), (0, 255, 0), 1)
+            # Diagnostic: project FLAME 3D landmarks via DECA cam chain (red)
+            # If flame_lmks_3d is provided, project them and overlay to verify
+            # alignment between DECA projection (red) and MediaPipe detection (green)
+            if (flame_lmks_3d is not None and deca_cam is not None
+                    and deca_crop_tform is not None and align_M is not None):
+                flame_lmks_2d = _project_vertices_deca(
+                    flame_lmks_3d, deca_cam, deca_crop_tform, align_M,
+                )
+                for pt in flame_lmks_2d:
+                    cv2.circle(lmk_vis, (int(pt[0]), int(pt[1])), 2, (255, 0, 0), -1)
             panels.append(_resize(lmk_vis))
         else:
             panels.append(np.zeros((size, size, 3), dtype=np.uint8))
@@ -397,6 +412,7 @@ def save_summary_grid(
         return
     grid = np.concatenate(summaries, axis=0)
     cv2.imwrite(output_path, cv2.cvtColor(grid, cv2.COLOR_RGB2BGR))
+
 
 
 def _compute_vertex_normals(
