@@ -263,6 +263,7 @@ class Stage1Visualizer:
         lmks_68: np.ndarray | None,
         vertices: np.ndarray | None,
         faces: np.ndarray | None,
+        lmks_3d_68: np.ndarray | None = None,
     ) -> np.ndarray:
         """Save a horizontal summary strip (flame-head-tracker / pixel3dmm style).
 
@@ -274,6 +275,7 @@ class Stage1Visualizer:
             lmks_68: [68, 2] landmarks in aligned image coords (optional)
             vertices: [N, 3] posed FLAME mesh vertices in meters (optional)
             faces: [M, 3] FLAME mesh face indices (optional)
+            lmks_3d_68: [68, 3] FLAME 3D landmark positions (optional, for camera fitting)
 
         Returns:
             The summary strip as RGB uint8 [size, size*4, 3]
@@ -330,7 +332,14 @@ class Stage1Visualizer:
         # Panel 4: Mesh wireframe overlay (posed FLAME mesh)
         if vertices is not None and faces is not None:
             mesh_vis = aligned_image.copy()
-            pts_2d = _project_vertices_ortho(vertices, aligned_image.shape[0])
+            if lmks_3d_68 is not None and lmks_68 is not None:
+                # Use landmark-fitted orthographic projection for proper alignment
+                pts_2d = _project_vertices_fitted(
+                    vertices, lmks_3d_68, lmks_68, aligned_image.shape[0],
+                )
+            else:
+                # Fallback to naive fit-to-bounds projection
+                pts_2d = _project_vertices_ortho(vertices, aligned_image.shape[0])
             _draw_wireframe(mesh_vis, pts_2d, faces, color=(0, 255, 255), thickness=1)
             panels.append(_resize(mesh_vis))
         else:
@@ -359,6 +368,68 @@ def save_summary_grid(
         return
     grid = np.concatenate(summaries, axis=0)
     cv2.imwrite(output_path, cv2.cvtColor(grid, cv2.COLOR_RGB2BGR))
+
+
+def _project_vertices_fitted(
+    vertices: np.ndarray,
+    lmks_3d: np.ndarray,
+    lmks_2d: np.ndarray,
+    image_size: int,
+) -> np.ndarray:
+    """Project FLAME vertices using orthographic camera fitted to 2D landmarks.
+
+    Solves for [scale, tx, ty] that best maps FLAME 3D landmarks to detected
+    2D landmarks in the aligned image, following the same orthographic model
+    as DECA (batch_orth_proj): u = scale * x + tx, v = scale * (-y) + ty.
+
+    Args:
+        vertices: [N, 3] FLAME mesh vertices in meters
+        lmks_3d: [68, 3] FLAME 3D landmark positions in meters
+        lmks_2d: [68, 2] detected 2D landmarks in aligned image pixel coords
+        image_size: aligned image dimension (square)
+
+    Returns:
+        [N, 2] projected 2D coordinates in pixel space
+    """
+    # FLAME: x=right, y=up, z=forward
+    # Image: u=right, v=down
+    # Orthographic model: u = scale * x + tx, v = scale * (-y) + ty
+    #
+    # Use only interior landmarks (17-67: brows, eyes, nose, mouth) for fitting.
+    # Jawline landmarks (0-16) use dynamic contour in 2D detection but static
+    # positions in FLAME's seletec_3d68, causing mismatch at non-frontal poses.
+    interior = slice(17, 68)
+    x_3d = lmks_3d[interior, 0]
+    y_3d = -lmks_3d[interior, 1]  # flipped y
+
+    u_2d = lmks_2d[interior, 0]
+    v_2d = lmks_2d[interior, 1]
+
+    # Solve least-squares: [scale, tx] from u = scale * x_3d + tx
+    #                      [scale, ty] from v = scale * y_3d + ty
+    # Combined system: minimize || A @ [scale, tx, ty]^T - b ||^2
+    n = len(x_3d)
+    A = np.zeros((2 * n, 3))
+    b = np.zeros(2 * n)
+
+    A[:n, 0] = x_3d       # scale * x_3d
+    A[:n, 1] = 1.0        # tx
+    A[n:, 0] = y_3d       # scale * (-y_3d)
+    A[n:, 2] = 1.0        # ty
+    b[:n] = u_2d
+    b[n:] = v_2d
+
+    params, _, _, _ = np.linalg.lstsq(A, b, rcond=None)
+    scale, tx, ty = params
+
+    # Apply to all vertices
+    vx = vertices[:, 0]
+    vy = -vertices[:, 1]
+    pts_2d = np.stack([
+        scale * vx + tx,
+        scale * vy + ty,
+    ], axis=1)
+    return pts_2d
 
 
 def _project_vertices_ortho(
