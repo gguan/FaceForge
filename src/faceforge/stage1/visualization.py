@@ -54,7 +54,7 @@ class Stage1Visualizer:
             self.base_dir = os.path.join(output_dir, subject_name, 'stage1')
         self.dirs = {}
         for name in ['01_detection', '02_alignment', '03_segmentation',
-                      '04_mica', '05_deca', '06_merged']:
+                      '04_mica', '05_deca']:
             d = os.path.join(self.base_dir, name)
             os.makedirs(d, exist_ok=True)
             self.dirs[name] = d
@@ -222,8 +222,25 @@ class Stage1Visualizer:
             verts_mm = vertices * 1000  # meters → mm
             _save_obj(os.path.join(d, 'mesh.obj'), verts_mm, faces)
 
-    def save_deca(self, deca_crop: np.ndarray, deca_params: dict):
-        """Save DECA debug outputs."""
+    def save_deca(
+        self,
+        deca_crop: np.ndarray,
+        deca_params: dict,
+        flame_params: dict | None = None,
+        canonical_vertices: np.ndarray | None = None,
+        posed_vertices: np.ndarray | None = None,
+        faces: np.ndarray | None = None,
+    ):
+        """Save DECA outputs, merged FLAME params, and meshes.
+
+        Args:
+            deca_crop: [224, 224, 3] uint8 DECA crop image
+            deca_params: dict with exp, pose, tex, light (for debug JSON)
+            flame_params: merged FLAME parameters dict (optional)
+            canonical_vertices: [V, 3] canonical mesh (shape only, no pose/exp)
+            posed_vertices: [V, 3] posed mesh (shape + expression + pose)
+            faces: [F, 3] FLAME face indices
+        """
         d = self.dirs['05_deca']
 
         # DECA crop
@@ -232,7 +249,7 @@ class Stage1Visualizer:
             cv2.cvtColor(deca_crop, cv2.COLOR_RGB2BGR),
         )
 
-        # Parameters as JSON
+        # DECA raw parameters as JSON
         params_json = {}
         for k, v in deca_params.items():
             if hasattr(v, 'numpy'):
@@ -242,30 +259,25 @@ class Stage1Visualizer:
         with open(os.path.join(d, 'params.json'), 'w') as f:
             json.dump(params_json, f, indent=2)
 
-    def save_merged(
-        self,
-        flame_params: dict,
-        vertices: np.ndarray | None,
-        faces: np.ndarray | None,
-        arcface_feat: np.ndarray | None,
-        input_image: np.ndarray | None,
-    ):
-        """Save merged output debug files."""
-        d = self.dirs['06_merged']
+        # Merged FLAME parameters (MICA shape + DECA exp/pose/tex/light)
+        if flame_params is not None:
+            params_np = {}
+            for k, v in flame_params.items():
+                if hasattr(v, 'numpy'):
+                    params_np[k] = v.detach().cpu().numpy()
+                else:
+                    params_np[k] = np.array(v)
+            np.savez(os.path.join(d, 'flame_params.npz'), **params_np)
 
-        # Save FLAME parameters as npz
-        params_np = {}
-        for k, v in flame_params.items():
-            if hasattr(v, 'numpy'):
-                params_np[k] = v.detach().cpu().numpy()
-            else:
-                params_np[k] = np.array(v)
-        np.savez(os.path.join(d, 'flame_params.npz'), **params_np)
+        # Canonical mesh (shape only, identity pose, zero expression)
+        if canonical_vertices is not None and faces is not None:
+            verts_mm = canonical_vertices * 1000  # meters → mm
+            _save_obj(os.path.join(d, 'mesh_canonical.obj'), verts_mm, faces)
 
-        # Final mesh
-        if vertices is not None and faces is not None:
-            verts_mm = vertices * 1000  # meters → mm
-            _save_obj(os.path.join(d, 'mesh_final.obj'), verts_mm, faces)
+        # Posed mesh (shape + expression + pose)
+        if posed_vertices is not None and faces is not None:
+            verts_mm = posed_vertices * 1000  # meters → mm
+            _save_obj(os.path.join(d, 'mesh_posed.obj'), verts_mm, faces)
 
     def save_summary(
         self,

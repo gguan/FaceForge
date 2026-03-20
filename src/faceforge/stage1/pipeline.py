@@ -141,28 +141,30 @@ class Stage1Pipeline:
         # Step 4b: DECA inference
         deca_result = self.deca.run(image_rgb)
 
-        if vis:
-            vis.save_deca(deca_result['deca_crop'], {
-                'exp': deca_result['exp'],
-                'pose': deca_result['pose'],
-                'tex': deca_result['tex'],
-                'light': deca_result['light'],
-            })
-
         # Step 5: Merge parameters
         flame_params = merge_params(mica_result, deca_result)
 
+        # Canonical vertices (shape only, no pose/expression)
+        canonical_verts = mica_result['vertices'].squeeze(0).numpy()  # [5023, 3]
+
+        # Posed vertices (shape + expression + pose)
+        posed_verts = self._get_posed_vertices(flame_params)
+        verts_for_vis = posed_verts if posed_verts is not None else canonical_verts
+
         summary_strip = None
         if vis:
-            posed_verts = self._get_posed_vertices(flame_params)
-            verts_for_vis = posed_verts if posed_verts is not None else mica_result['vertices'].squeeze(0).numpy()
-
-            vis.save_merged(
-                flame_params,
-                verts_for_vis,
-                faces,
-                mica_result['arcface_feat'].numpy(),
-                image_rgb,
+            vis.save_deca(
+                deca_result['deca_crop'],
+                {
+                    'exp': deca_result['exp'],
+                    'pose': deca_result['pose'],
+                    'tex': deca_result['tex'],
+                    'light': deca_result['light'],
+                },
+                flame_params=flame_params,
+                canonical_vertices=canonical_verts,
+                posed_vertices=verts_for_vis,
+                faces=faces,
             )
 
             flame_lmks_3d = self._get_flame_landmarks_3d(verts_for_vis)
