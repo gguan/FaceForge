@@ -608,30 +608,29 @@ def _compute_deca_vertex_colors(
 ) -> torch.Tensor:
     """Compute per-vertex shading using DECA's multi-directional lighting.
 
-    Ported from DECA's add_directionlight() + render_shape():
-    5 directional lights at different angles, intensity 1.7,
-    base color gray (180/255). Produces the same look as DECA's demo.
+    Faithfully ported from DECA's add_directionlight() + render_shape():
+    - 5 directional lights, each with per-channel intensity 1.7
+    - Per-light: shading_l = clamp(n·l, 0, 1) * intensity  → [V, 3]
+    - Final shading = mean over 5 lights                    → [V, 3]
+    - vertex_color = albedo * shading
+    - No normal flipping (DECA handles backfaces via pos_mask on pixels)
     """
     n_verts = normals.shape[0]
 
-    # Base gray color (DECA uses 180/255)
-    base = DECA_MESH_COLOR
-    albedo = torch.full((n_verts, 3), base, device=device)
+    # Base gray color: DECA uses RGB(180, 180, 180) / 255
+    albedo = torch.full((n_verts, 3), DECA_MESH_COLOR, device=device)
 
-    # Flip inward-pointing normals (inner mouth/eye cavity) so they get lit
-    # instead of appearing as black patches. Same effect as DECA's pos_mask.
-    normals = normals.clone()
-    normals[normals[:, 2] < 0] *= -1
-
-    # 5 directional lights, each with intensity 1.7
+    # 5 directional lights — exactly as DECA's render_shape()
     light_dirs = torch.tensor(DECA_LIGHT_DIRS, dtype=torch.float32, device=device)  # [5, 3]
     light_dirs = torch.nn.functional.normalize(light_dirs, dim=1)
+    light_int = torch.full((5, 3), DECA_LIGHT_INTENSITY, device=device)  # [5, 3]
 
-    # Lambert: shading = mean_over_lights( max(0, n·l) * intensity )
+    # Per-light Lambert: n_dot_l [V, 5], then broadcast with intensity [5, 3]
+    # shading_per_light = n_dot_l[:, :, None] * intensity[None, :, :]  → [V, 5, 3]
     n_dot_l = torch.clamp(
         torch.einsum('vc,lc->vl', normals, light_dirs), min=0.0, max=1.0,
     )  # [V, 5]
-    shading = n_dot_l.mean(dim=1, keepdim=True) * DECA_LIGHT_INTENSITY  # [V, 1]
+    shading = (n_dot_l[:, :, None] * light_int[None, :, :]).mean(dim=1)  # [V, 3]
 
     vertex_color = torch.clamp(albedo * shading, 0.0, 1.0)
     return vertex_color
