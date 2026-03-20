@@ -43,13 +43,17 @@ PARSING_COLORS = np.array([
     [0, 204, 0],      # 18: hat
 ], dtype=np.uint8)
 
-MESH_BASE_COLOR_RGB = (0.82, 0.82, 0.82)
-MESH_BASE_WEIGHT = 0.07
-MESH_OVERLAY_WEIGHT = 0.93
-MESH_SHADE_MIN = 0.94
-MESH_SHADE_MAX = 1.00
-MESH_EDGE_DARKEN = 0.82
-MESH_EDGE_WIDTH = 2
+# Phong shading params (flame-head-tracker style)
+PHONG_AMBIENT = 0.1
+PHONG_DIFFUSE = 0.8
+PHONG_SPECULAR = 0.0
+PHONG_SHININESS = 30.0
+PHONG_LIGHT_POS = [0.0, 0.0, 10.0]
+PHONG_CAMERA_POS = [0.0, 0.0, 10.0]
+
+# Mesh overlay compositing
+MESH_OVERLAY_BASE_WEIGHT = 0.4
+MESH_OVERLAY_MESH_WEIGHT = 0.6
 
 
 class Stage1Visualizer:
@@ -412,12 +416,10 @@ class Stage1Visualizer:
                     rendered, foreground_mask = _render_mesh_phong(
                         vertices, verts_ndc, faces, device, render_size=img_size,
                     )
-                    mesh_vis = _blend_overlay_on_mask(
-                        aligned_image,
-                        rendered,
-                        foreground_mask,
-                        base_weight=MESH_BASE_WEIGHT,
-                        overlay_weight=MESH_OVERLAY_WEIGHT,
+                    # Composite: flame-head-tracker style cv2.addWeighted
+                    mesh_vis = cv2.addWeighted(
+                        aligned_image, MESH_OVERLAY_BASE_WEIGHT,
+                        rendered, MESH_OVERLAY_MESH_WEIGHT, 0,
                     )
                 else:
                     mesh_vis = aligned_image.copy()
@@ -619,17 +621,51 @@ def _compute_vertex_normals(
     return normals
 
 
-def _compute_soft_vertex_colors(
+def _compute_phong_vertex_colors(
+    vertices: torch.Tensor,
     normals: torch.Tensor,
     device: str,
 ) -> torch.Tensor:
-    """Return softly shaded mesh colors with a high brightness floor."""
-    num_vertices = normals.shape[0]
-    base_color = torch.tensor(MESH_BASE_COLOR_RGB, dtype=torch.float32, device=device).view(1, 3)
-    light_dir = torch.tensor([0.0, 0.0, 1.0], dtype=torch.float32, device=device).view(1, 3)
-    diffuse = torch.clamp((normals * light_dir).sum(dim=1, keepdim=True), min=0.0, max=1.0)
-    shade = MESH_SHADE_MIN + (MESH_SHADE_MAX - MESH_SHADE_MIN) * diffuse
-    return base_color.expand(num_vertices, 3) * shade
+    """Compute per-vertex Phong shading (ported from flame-head-tracker).
+
+    Uses the same lighting model as flame-head-tracker's render_geometry():
+    ambient=0.1, diffuse=0.8, specular=0.0, light at [0,0,10].
+    Base color is white so shading alone drives the appearance.
+    """
+    base_color = torch.ones_like(vertices)  # white
+
+    light_pos = torch.tensor(PHONG_LIGHT_POS, device=device)
+    camera_pos = torch.tensor(PHONG_CAMERA_POS, device=device)
+    ambient_c = torch.tensor([PHONG_AMBIENT] * 3, device=device)
+    diffuse_c = torch.tensor([PHONG_DIFFUSE] * 3, device=device)
+    specular_c = torch.tensor([PHONG_SPECULAR] * 3, device=device)
+
+    # Light direction (vertex → light)
+    light_dir = light_pos - vertices
+    light_dir = light_dir / (light_dir.norm(dim=-1, keepdim=True) + 1e-8)
+
+    # View direction (vertex → camera)
+    view_dir = camera_pos - vertices
+    view_dir = view_dir / (view_dir.norm(dim=-1, keepdim=True) + 1e-8)
+
+    # Reflection direction for specular
+    n_dot_l = (normals * light_dir).sum(-1, keepdim=True)
+    reflect_dir = 2 * normals * n_dot_l - light_dir
+    reflect_dir = reflect_dir / (reflect_dir.norm(dim=-1, keepdim=True) + 1e-8)
+
+    # Ambient
+    ambient = ambient_c * base_color
+
+    # Diffuse
+    diff = torch.clamp(n_dot_l, min=0.0)
+    diffuse = diffuse_c * base_color * diff
+
+    # Specular
+    spec = torch.clamp((reflect_dir * view_dir).sum(-1, keepdim=True), min=0.0)
+    specular = specular_c * (spec ** PHONG_SHININESS)
+
+    vertex_color = torch.clamp(ambient + diffuse + specular, 0.0, 1.0)
+    return vertex_color
 
 
 @torch.no_grad()
@@ -658,9 +694,9 @@ def _render_mesh_phong(
     verts_t = torch.from_numpy(vertices).float().to(device)
     verts_ndc_t = torch.from_numpy(verts_ndc).float().to(device)
 
-    # Compute vertex normals from world-space geometry
+    # Compute vertex normals and full Phong shading (flame-head-tracker style)
     normals = _compute_vertex_normals(verts_t, faces_t)
-    vertex_color = _compute_soft_vertex_colors(normals, device=device)
+    vertex_color = _compute_phong_vertex_colors(verts_t, normals, device=device)
 
     # Build PyTorch3D mesh with baked vertex colors
     mesh = Meshes(verts=verts_ndc_t[None], faces=faces_t[None])
@@ -691,7 +727,6 @@ def _render_mesh_phong(
     alpha = image[0, ..., 3].cpu().numpy()
     foreground_mask = (alpha > 0).astype(np.uint8)
     image = (image[0, ..., :3].cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
-    image = _enhance_mesh_contours(image, foreground_mask)
 
     image = cv2.resize(image, (render_size, render_size))
     foreground_mask = cv2.resize(foreground_mask, (render_size, render_size))
