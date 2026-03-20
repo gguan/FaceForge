@@ -6,6 +6,7 @@ Usage:
     python scripts/run_stage1.py --image path/to/face.jpg
     python scripts/run_stage1.py --image path/to/face.jpg --device cuda:0 --debug
     python scripts/run_stage1.py --image img1.jpg img2.jpg img3.jpg  # multi-image
+    python scripts/run_stage1.py --image path/to/image_dir/            # directory of images
 """
 
 import argparse
@@ -16,6 +17,8 @@ import time
 import cv2
 import numpy as np
 import torch
+
+IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif', '.webp'}
 
 # Allow running from project root without installing the package
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
@@ -28,7 +31,8 @@ def parse_args():
     )
     parser.add_argument(
         '--image', nargs='+', required=True, metavar='PATH',
-        help='Input face image(s). Provide multiple images for shape aggregation.',
+        help='Input face image(s) or directory. '
+             'If a directory is given, all images inside are used.',
     )
     parser.add_argument(
         '--output', default='output', metavar='DIR',
@@ -64,16 +68,38 @@ def _resolve_data_dir(data_dir_arg: str | None) -> str:
     return os.path.join(project_root, 'data')
 
 
-def _load_images(paths: list[str]) -> list[np.ndarray]:
+def _expand_paths(paths: list[str]) -> list[str]:
+    """Expand directories to individual image file paths."""
+    result = []
+    for p in paths:
+        if os.path.isdir(p):
+            for f in sorted(os.listdir(p)):
+                if os.path.splitext(f)[1].lower() in IMAGE_EXTENSIONS:
+                    result.append(os.path.join(p, f))
+        else:
+            result.append(p)
+    if not result:
+        print('[ERROR] No image files found in the given paths.', file=sys.stderr)
+        sys.exit(1)
+    return result
+
+
+def _load_images(paths: list[str]) -> tuple[list[np.ndarray], list[str]]:
+    """Load images and return (images_rgb, paths)."""
     images = []
+    valid_paths = []
     for path in paths:
         img = cv2.imread(path)
         if img is None:
-            print(f'[ERROR] Could not read image: {path}', file=sys.stderr)
-            sys.exit(1)
+            print(f'[WARN] Could not read image, skipping: {path}', file=sys.stderr)
+            continue
         images.append(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+        valid_paths.append(path)
         print(f'  Loaded: {path}  ({img.shape[1]}×{img.shape[0]})')
-    return images
+    if not images:
+        print('[ERROR] No valid images loaded.', file=sys.stderr)
+        sys.exit(1)
+    return images, valid_paths
 
 
 def _print_output(result) -> None:
@@ -117,9 +143,11 @@ def main():
     print(f'  data_dir:   {data_dir}')
     print()
 
-    # ── load images ──────────────────────────────────────────────────────────
+    # ── expand & load images ────────────────────────────────────────────────
     print('Loading images...')
-    images = _load_images(args.image)
+    image_paths = _expand_paths(args.image)
+    images, image_paths = _load_images(image_paths)
+    print(f'  Total images: {len(images)}')
 
     # ── build config ─────────────────────────────────────────────────────────
     from faceforge.stage1 import Stage1Config, Stage1Pipeline
@@ -144,19 +172,49 @@ def main():
     # ── run pipeline ─────────────────────────────────────────────────────────
     print('\nRunning Stage 1...')
     t0 = time.perf_counter()
-    if len(images) == 1:
-        result = pipeline.run_single(images[0], subject_name=args.subject)
-    else:
-        result = pipeline.run_multi(images, subject_name=args.subject)
-    elapsed = time.perf_counter() - t0
-    print(f'  Inference time: {elapsed:.2f}s')
 
-    # ── print results ────────────────────────────────────────────────────────
-    _print_output(result)
+    results = []
+    summaries = []
+    img_names = [f'{i+1:03d}' for i in range(len(images))]
+
+    for img, img_name, path in zip(images, img_names, image_paths):
+        print(f'\n  [{img_name}] {os.path.basename(path)}')
+        try:
+            r, summary = pipeline.run_single(
+                img, subject_name=args.subject, image_name=img_name,
+            )
+            results.append(r)
+            if summary is not None:
+                summaries.append(summary)
+            _print_output(r)
+        except ValueError as e:
+            print(f'  [WARN] Skipping {img_name}: {e}')
+
+    if not results:
+        print('[ERROR] No images processed successfully.', file=sys.stderr)
+        sys.exit(1)
+
+    result = results[0]
+    if len(results) > 1:
+        result, _ = pipeline.run_multi(
+            images, subject_name=args.subject, image_names=img_names,
+        )
+        print('\n── Aggregated result ──')
+        _print_output(result)
+
+    elapsed = time.perf_counter() - t0
+    print(f'\n  Total inference time: {elapsed:.2f}s')
 
     if args.debug:
         debug_dir = os.path.join(args.output, args.subject, 'stage1')
         print(f'\nDebug output saved to: {debug_dir}')
+
+        # Concatenate all per-image summaries into one grid
+        if len(summaries) > 1:
+            from faceforge.stage1.visualization import save_summary_grid
+            grid_path = os.path.join(debug_dir, 'summary_grid.png')
+            save_summary_grid(summaries, grid_path)
+            print(f'  Summary grid: {grid_path}')
 
     print('\nDone.')
 

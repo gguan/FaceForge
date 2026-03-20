@@ -5,6 +5,7 @@ Ported from: flame-head-tracker/utils/image_utils.py image_align()
 Original: FFHQ dataset pre-processing step (NVlabs)
 """
 
+import cv2
 import numpy as np
 import PIL.Image
 import scipy.ndimage
@@ -17,7 +18,8 @@ def image_align(
     transform_size: int = 1024,
     scale_factor: float = 1.3,
     padding_mode: str = 'constant',
-) -> np.ndarray:
+    return_transform: bool = False,
+) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
     """Align and crop face image using 68-point landmarks.
 
     Args:
@@ -27,9 +29,12 @@ def image_align(
         transform_size: Internal working resolution (default 1024)
         scale_factor: Crop scale (1.3 for tracking, 1.0 for FFHQ)
         padding_mode: 'constant' (white fill) or 'reflect'
+        return_transform: If True, also return the 3x3 perspective matrix
+            that maps original image coords → aligned image coords.
 
     Returns:
-        Aligned image [output_size, output_size, 3] uint8
+        Aligned image [output_size, output_size, 3] uint8.
+        If return_transform=True, returns (aligned_image, transform_matrix).
     """
     lm = np.array(face_landmarks)
     lm_eye_left = lm[36:42, :2]
@@ -53,6 +58,8 @@ def image_align(
     y = np.flipud(x) * [-1, 1]
     c = eye_avg + eye_to_mouth * 0.1
     quad = np.stack([c - x - y, c - x + y, c + x + y, c + x - y])
+    # Save original quad for transform computation
+    quad_orig = quad.copy()
     qsize = np.hypot(*x) * 2
 
     # Convert to PIL
@@ -139,4 +146,24 @@ def image_align(
     if output_size < transform_size:
         img_pil = img_pil.resize((output_size, output_size), PIL.Image.LANCZOS)
 
-    return np.asarray(img_pil)
+    aligned = np.asarray(img_pil)
+
+    if not return_transform:
+        return aligned
+
+    # Compute perspective transform: original image coords → aligned image coords.
+    # PIL QUAD maps output corners → source (quad) corners.
+    # quad_orig holds source positions of the 4 output corners:
+    #   quad_orig[0] → output (0, 0)         top-left
+    #   quad_orig[1] → output (0, out_sz)    bottom-left
+    #   quad_orig[2] → output (out_sz, out_sz) bottom-right
+    #   quad_orig[3] → output (out_sz, 0)    top-right
+    src_pts = quad_orig.astype(np.float32)
+    dst_pts = np.array([
+        [0, 0],
+        [0, output_size],
+        [output_size, output_size],
+        [output_size, 0],
+    ], dtype=np.float32)
+    M = cv2.getPerspectiveTransform(src_pts, dst_pts)
+    return aligned, M
