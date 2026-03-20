@@ -165,16 +165,15 @@ class Stage1Pipeline:
                 image_rgb,
             )
 
-            # Get 3D landmarks for camera-fitted mesh overlay
-            lmks_3d = self._get_flame_landmarks_3d(verts_for_vis)
-
             summary_strip = vis.save_summary(
                 aligned_image=aligned_img,
                 parsing=parsing,
                 lmks_68=lmks_68_aligned,
                 vertices=verts_for_vis,
                 faces=faces,
-                lmks_3d_68=lmks_3d,
+                deca_cam=deca_result['cam'].numpy(),
+                deca_crop_tform=deca_result['crop_tform'],
+                align_M=align_M,
             )
 
         # Build Stage1Output
@@ -308,25 +307,3 @@ class Stage1Pipeline:
             print(f'[Stage1] Warning: FLAME posed vertices failed ({e}), using canonical.')
             return None
 
-    @torch.no_grad()
-    def _get_flame_landmarks_3d(self, vertices: np.ndarray) -> np.ndarray | None:
-        """Extract 68 3D landmark positions from FLAME vertices.
-
-        Uses FLAME's full_lmk_faces_idx / full_lmk_bary_coords (same as
-        flame-head-tracker's seletec_3d68).
-
-        Args:
-            vertices: [5023, 3] posed FLAME vertices in meters
-
-        Returns:
-            [68, 3] 3D landmark positions, or None on failure
-        """
-        try:
-            flame = self.mica.model.flame
-            device = next(flame.parameters()).device
-            verts_t = torch.tensor(vertices, dtype=torch.float32, device=device).unsqueeze(0)
-            lmks_3d = flame.seletec_3d68(verts_t)  # [1, 68, 3]
-            return lmks_3d.squeeze(0).cpu().numpy()
-        except Exception as e:
-            print(f'[Stage1] Warning: FLAME 3D landmarks failed ({e}).')
-            return None

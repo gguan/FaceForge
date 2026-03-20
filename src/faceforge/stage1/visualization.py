@@ -263,7 +263,9 @@ class Stage1Visualizer:
         lmks_68: np.ndarray | None,
         vertices: np.ndarray | None,
         faces: np.ndarray | None,
-        lmks_3d_68: np.ndarray | None = None,
+        deca_cam: np.ndarray | None = None,
+        deca_crop_tform: np.ndarray | None = None,
+        align_M: np.ndarray | None = None,
     ) -> np.ndarray:
         """Save a horizontal summary strip (flame-head-tracker / pixel3dmm style).
 
@@ -275,7 +277,9 @@ class Stage1Visualizer:
             lmks_68: [68, 2] landmarks in aligned image coords (optional)
             vertices: [N, 3] posed FLAME mesh vertices in meters (optional)
             faces: [M, 3] FLAME mesh face indices (optional)
-            lmks_3d_68: [68, 3] FLAME 3D landmark positions (optional, for camera fitting)
+            deca_cam: [1, 3] DECA orthographic camera [scale, tx, ty] (optional)
+            deca_crop_tform: [3, 3] similarity transform original→DECA crop (optional)
+            align_M: [3, 3] projective transform original→aligned image (optional)
 
         Returns:
             The summary strip as RGB uint8 [size, size*4, 3]
@@ -332,10 +336,10 @@ class Stage1Visualizer:
         # Panel 4: Mesh wireframe overlay (posed FLAME mesh)
         if vertices is not None and faces is not None:
             mesh_vis = aligned_image.copy()
-            if lmks_3d_68 is not None and lmks_68 is not None:
-                # Use landmark-fitted orthographic projection for proper alignment
-                pts_2d = _project_vertices_fitted(
-                    vertices, lmks_3d_68, lmks_68, aligned_image.shape[0],
+            if deca_cam is not None and deca_crop_tform is not None and align_M is not None:
+                # Use DECA camera → crop → original → aligned projection chain
+                pts_2d = _project_vertices_deca(
+                    vertices, deca_cam, deca_crop_tform, align_M,
                 )
             else:
                 # Fallback to naive fit-to-bounds projection
@@ -370,65 +374,69 @@ def save_summary_grid(
     cv2.imwrite(output_path, cv2.cvtColor(grid, cv2.COLOR_RGB2BGR))
 
 
-def _project_vertices_fitted(
+def _project_vertices_deca(
     vertices: np.ndarray,
-    lmks_3d: np.ndarray,
-    lmks_2d: np.ndarray,
-    image_size: int,
+    deca_cam: np.ndarray,
+    deca_crop_tform: np.ndarray,
+    align_M: np.ndarray,
 ) -> np.ndarray:
-    """Project FLAME vertices using orthographic camera fitted to 2D landmarks.
+    """Project FLAME vertices to aligned image space via DECA's camera.
 
-    Solves for [scale, tx, ty] that best maps FLAME 3D landmarks to detected
-    2D landmarks in the aligned image, following the same orthographic model
-    as DECA (batch_orth_proj): u = scale * x + tx, v = scale * (-y) + ty.
+    Uses the same orthographic model as DECA (batch_orth_proj), then chains
+    through the DECA crop → original image → aligned image transforms.
+
+    Projection chain:
+        1. FLAME 3D → NDC via batch_orth_proj: ndc = scale * (xy + [tx, ty]), flip y
+        2. NDC [-1, 1] → DECA crop pixels [0, 224]
+        3. DECA crop pixels → original image pixels (inverse of crop tform)
+        4. Original image pixels → aligned image pixels (align_M)
 
     Args:
         vertices: [N, 3] FLAME mesh vertices in meters
-        lmks_3d: [68, 3] FLAME 3D landmark positions in meters
-        lmks_2d: [68, 2] detected 2D landmarks in aligned image pixel coords
-        image_size: aligned image dimension (square)
+        deca_cam: [1, 3] orthographic camera [scale, tx, ty]
+        deca_crop_tform: [3, 3] similarity transform (original → 224 crop)
+        align_M: [3, 3] projective transform (original → aligned image)
 
     Returns:
-        [N, 2] projected 2D coordinates in pixel space
+        [N, 2] projected 2D coordinates in aligned image pixel space
     """
-    # FLAME: x=right, y=up, z=forward
-    # Image: u=right, v=down
-    # Orthographic model: u = scale * x + tx, v = scale * (-y) + ty
-    #
-    # Use only interior landmarks (17-67: brows, eyes, nose, mouth) for fitting.
-    # Jawline landmarks (0-16) use dynamic contour in 2D detection but static
-    # positions in FLAME's seletec_3d68, causing mismatch at non-frontal poses.
-    interior = slice(17, 68)
-    x_3d = lmks_3d[interior, 0]
-    y_3d = -lmks_3d[interior, 1]  # flipped y
+    scale, tx, ty = deca_cam[0, 0], deca_cam[0, 1], deca_cam[0, 2]
 
-    u_2d = lmks_2d[interior, 0]
-    v_2d = lmks_2d[interior, 1]
+    # Step 1: batch_orth_proj — translate then scale, same as DECA
+    # ndc_x = scale * (x + tx)
+    # ndc_y = scale * (y + ty)
+    xy = vertices[:, :2].copy()
+    xy[:, 0] += tx
+    xy[:, 1] += ty
+    ndc = xy * scale
 
-    # Solve least-squares: [scale, tx] from u = scale * x_3d + tx
-    #                      [scale, ty] from v = scale * y_3d + ty
-    # Combined system: minimize || A @ [scale, tx, ty]^T - b ||^2
-    n = len(x_3d)
-    A = np.zeros((2 * n, 3))
-    b = np.zeros(2 * n)
+    # Flip y (and z, though we only use x,y) — same as DECA's decode:
+    #   trans_verts[:, :, 1:] = -trans_verts[:, :, 1:]
+    ndc[:, 1] = -ndc[:, 1]
 
-    A[:n, 0] = x_3d       # scale * x_3d
-    A[:n, 1] = 1.0        # tx
-    A[n:, 0] = y_3d       # scale * (-y_3d)
-    A[n:, 2] = 1.0        # ty
-    b[:n] = u_2d
-    b[n:] = v_2d
+    # Step 2: NDC [-1, 1] → DECA crop pixels [0, 224]
+    crop_size = 224.0
+    crop_px = (ndc + 1.0) / 2.0 * crop_size  # [N, 2]
 
-    params, _, _, _ = np.linalg.lstsq(A, b, rcond=None)
-    scale, tx, ty = params
+    # Step 3: DECA crop pixels → original image pixels
+    # deca_crop_tform maps original → crop, so we need its inverse
+    crop_to_orig = np.linalg.inv(deca_crop_tform)  # [3, 3]
 
-    # Apply to all vertices
-    vx = vertices[:, 0]
-    vy = -vertices[:, 1]
-    pts_2d = np.stack([
-        scale * vx + tx,
-        scale * vy + ty,
-    ], axis=1)
+    # Step 4: original → aligned image
+    # align_M is a 3x3 projective matrix
+
+    # Compose: crop_pixels → original → aligned
+    # We can compose crop_to_orig and align_M into a single matrix
+    composed = align_M @ crop_to_orig  # [3, 3]
+
+    # Apply composed transform to crop pixel coordinates
+    N = crop_px.shape[0]
+    ones = np.ones((N, 1))
+    crop_h = np.concatenate([crop_px, ones], axis=1)  # [N, 3]
+    aligned_h = (composed @ crop_h.T).T  # [N, 3]
+
+    # Perspective divide
+    pts_2d = aligned_h[:, :2] / aligned_h[:, 2:3]
     return pts_2d
 
 

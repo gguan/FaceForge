@@ -79,12 +79,15 @@ class DECAInference:
             dict with:
                 'exp': [1, 50] expression coefficients
                 'pose': [1, 6] pose (head_pose[:3] + jaw_pose[3:])
+                'cam': [1, 3] orthographic camera [scale, tx, ty]
                 'tex': [1, 50] texture coefficients
                 'light': [1, 9, 3] SH lighting coefficients
                 'deca_crop': np.ndarray 224x224 crop (for debug)
+                'crop_tform': [3, 3] similarity transform (original → 224 crop)
         """
-        # DECA crop_image expects uint8 RGB, normalizes to [0,1] internally
-        image_tensor = self.model.crop_image(image_rgb).to(self.device)
+        # Crop image and capture the similarity transform (original → 224 crop)
+        image_tensor, crop_tform = self._crop_image_with_tform(image_rgb)
+        image_tensor = image_tensor.to(self.device)
         deca_dict = self.model.encode(image_tensor[None])
 
         # Extract crop image for debug (convert tensor back to numpy)
@@ -93,7 +96,46 @@ class DECAInference:
         return {
             'exp': deca_dict['exp'].detach().cpu(),      # [1, 50]
             'pose': deca_dict['pose'].detach().cpu(),     # [1, 6]
+            'cam': deca_dict['cam'].detach().cpu(),       # [1, 3]
             'tex': deca_dict['tex'].detach().cpu(),       # [1, 50]
             'light': deca_dict['light'].detach().cpu(),   # [1, 9, 3]
             'deca_crop': deca_crop,                        # [224, 224, 3] uint8
+            'crop_tform': crop_tform,                      # [3, 3] ndarray
         }
+
+    def _crop_image_with_tform(self, image: np.ndarray) -> tuple[torch.Tensor, np.ndarray]:
+        """Crop face for DECA and return the similarity transform matrix.
+
+        Replicates DECA's crop_image logic but also returns the 3x3
+        similarity transform (original image → 224x224 crop).
+
+        Args:
+            image: RGB uint8 [H, W, 3]
+
+        Returns:
+            (image_tensor [3, 224, 224], tform_matrix [3, 3])
+        """
+        from skimage.transform import estimate_transform, warp
+
+        h, w, _ = image.shape
+        bbox, bbox_type = self.model.face_detector.run(image)
+        if len(bbox) < 4:
+            print('no face detected! run original image')
+            left, right, top, bottom = 0, h - 1, 0, w - 1
+        else:
+            left, right = bbox[0], bbox[2]
+            top, bottom = bbox[1], bbox[3]
+
+        old_size, center = self.model.bbox2point(left, right, top, bottom, type=bbox_type)
+        size = int(old_size * 1.25)
+        src_pts = np.array([
+            [center[0] - size / 2, center[1] - size / 2],
+            [center[0] - size / 2, center[1] + size / 2],
+            [center[0] + size / 2, center[1] - size / 2],
+        ])
+        DST_PTS = np.array([[0, 0], [0, 223], [223, 0]])
+        tform = estimate_transform('similarity', src_pts, DST_PTS)
+
+        dst_image = warp(image / 255.0, tform.inverse, output_shape=(224, 224))
+        dst_image = dst_image.transpose(2, 0, 1)
+        return torch.tensor(dst_image).float(), tform.params.astype(np.float64)
