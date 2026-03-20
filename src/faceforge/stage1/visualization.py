@@ -43,17 +43,17 @@ PARSING_COLORS = np.array([
     [0, 204, 0],      # 18: hat
 ], dtype=np.uint8)
 
-# Phong shading params (flame-head-tracker style)
-PHONG_AMBIENT = 0.1
-PHONG_DIFFUSE = 0.8
-PHONG_SPECULAR = 0.0
-PHONG_SHININESS = 30.0
-PHONG_LIGHT_POS = [0.0, 0.0, 10.0]
-PHONG_CAMERA_POS = [0.0, 0.0, 10.0]
-
-# Mesh overlay compositing
-MESH_OVERLAY_BASE_WEIGHT = 0.4
-MESH_OVERLAY_MESH_WEIGHT = 0.6
+# DECA-style multi-directional lighting for mesh rendering
+# 5 lights with intensity 1.7, same as DECA's render_shape()
+DECA_LIGHT_DIRS = [
+    [-1, 1, 1],
+    [1, 1, 1],
+    [-1, -1, 1],
+    [1, -1, 1],
+    [0, 0, 1],
+]
+DECA_LIGHT_INTENSITY = 1.7
+DECA_MESH_COLOR = 180.0 / 255.0  # gray (0.706)
 
 
 class Stage1Visualizer:
@@ -416,11 +416,8 @@ class Stage1Visualizer:
                     rendered, foreground_mask = _render_mesh_phong(
                         vertices, verts_ndc, faces, device, render_size=img_size,
                     )
-                    # Composite: flame-head-tracker style cv2.addWeighted
-                    mesh_vis = cv2.addWeighted(
-                        aligned_image, MESH_OVERLAY_BASE_WEIGHT,
-                        rendered, MESH_OVERLAY_MESH_WEIGHT, 0,
-                    )
+                    # DECA-style: rendered mesh on black background
+                    mesh_vis = rendered
                 else:
                     mesh_vis = aligned_image.copy()
             else:
@@ -621,50 +618,34 @@ def _compute_vertex_normals(
     return normals
 
 
-def _compute_phong_vertex_colors(
-    vertices: torch.Tensor,
+def _compute_deca_vertex_colors(
     normals: torch.Tensor,
     device: str,
 ) -> torch.Tensor:
-    """Compute per-vertex Phong shading (ported from flame-head-tracker).
+    """Compute per-vertex shading using DECA's multi-directional lighting.
 
-    Uses the same lighting model as flame-head-tracker's render_geometry():
-    ambient=0.1, diffuse=0.8, specular=0.0, light at [0,0,10].
-    Base color is white so shading alone drives the appearance.
+    Ported from DECA's add_directionlight() + render_shape():
+    5 directional lights at different angles, intensity 1.7,
+    base color gray (180/255). Produces the same look as DECA's demo.
     """
-    base_color = torch.ones_like(vertices)  # white
+    n_verts = normals.shape[0]
 
-    light_pos = torch.tensor(PHONG_LIGHT_POS, device=device)
-    camera_pos = torch.tensor(PHONG_CAMERA_POS, device=device)
-    ambient_c = torch.tensor([PHONG_AMBIENT] * 3, device=device)
-    diffuse_c = torch.tensor([PHONG_DIFFUSE] * 3, device=device)
-    specular_c = torch.tensor([PHONG_SPECULAR] * 3, device=device)
+    # Base gray color (DECA uses 180/255)
+    base = DECA_MESH_COLOR
+    albedo = torch.full((n_verts, 3), base, device=device)
 
-    # Light direction (vertex → light)
-    light_dir = light_pos - vertices
-    light_dir = light_dir / (light_dir.norm(dim=-1, keepdim=True) + 1e-8)
+    # 5 directional lights, each with intensity 1.7
+    light_dirs = torch.tensor(DECA_LIGHT_DIRS, dtype=torch.float32, device=device)  # [5, 3]
+    light_dirs = torch.nn.functional.normalize(light_dirs, dim=1)
 
-    # View direction (vertex → camera)
-    view_dir = camera_pos - vertices
-    view_dir = view_dir / (view_dir.norm(dim=-1, keepdim=True) + 1e-8)
+    # Lambert: shading = mean_over_lights( max(0, n·l) * intensity )
+    # normals: [V, 3], light_dirs: [5, 3]
+    n_dot_l = torch.clamp(
+        torch.einsum('vc,lc->vl', normals, light_dirs), min=0.0, max=1.0,
+    )  # [V, 5]
+    shading = n_dot_l.mean(dim=1, keepdim=True) * DECA_LIGHT_INTENSITY  # [V, 1]
 
-    # Reflection direction for specular
-    n_dot_l = (normals * light_dir).sum(-1, keepdim=True)
-    reflect_dir = 2 * normals * n_dot_l - light_dir
-    reflect_dir = reflect_dir / (reflect_dir.norm(dim=-1, keepdim=True) + 1e-8)
-
-    # Ambient
-    ambient = ambient_c * base_color
-
-    # Diffuse
-    diff = torch.clamp(n_dot_l, min=0.0)
-    diffuse = diffuse_c * base_color * diff
-
-    # Specular
-    spec = torch.clamp((reflect_dir * view_dir).sum(-1, keepdim=True), min=0.0)
-    specular = specular_c * (spec ** PHONG_SHININESS)
-
-    vertex_color = torch.clamp(ambient + diffuse + specular, 0.0, 1.0)
+    vertex_color = torch.clamp(albedo * shading, 0.0, 1.0)
     return vertex_color
 
 
@@ -694,9 +675,9 @@ def _render_mesh_phong(
     verts_t = torch.from_numpy(vertices).float().to(device)
     verts_ndc_t = torch.from_numpy(verts_ndc).float().to(device)
 
-    # Compute vertex normals and full Phong shading (flame-head-tracker style)
+    # Compute vertex normals and DECA-style multi-light shading
     normals = _compute_vertex_normals(verts_t, faces_t)
-    vertex_color = _compute_phong_vertex_colors(verts_t, normals, device=device)
+    vertex_color = _compute_deca_vertex_colors(normals, device=device)
 
     # Build PyTorch3D mesh with baked vertex colors
     mesh = Meshes(verts=verts_ndc_t[None], faces=faces_t[None])
