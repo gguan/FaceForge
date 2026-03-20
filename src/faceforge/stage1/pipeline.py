@@ -149,7 +149,13 @@ class Stage1Pipeline:
 
         # Posed vertices (shape + expression + pose)
         posed_verts = self._get_posed_vertices(flame_params)
-        verts_for_vis = posed_verts if posed_verts is not None else canonical_verts
+        if posed_verts is not None:
+            verts_for_vis = posed_verts
+            print(f'[Stage1] Posed vertices OK, range: x=[{posed_verts[:,0].min():.4f}, {posed_verts[:,0].max():.4f}], '
+                  f'y=[{posed_verts[:,1].min():.4f}, {posed_verts[:,1].max():.4f}]')
+        else:
+            verts_for_vis = canonical_verts
+            print('[Stage1] WARNING: Using canonical vertices (no pose) — mesh overlay will NOT match head pose!')
 
         summary_strip = None
         if vis:
@@ -168,6 +174,12 @@ class Stage1Pipeline:
             )
 
             flame_lmks_3d = self._get_flame_landmarks_3d(verts_for_vis)
+            if flame_lmks_3d is not None:
+                print(f'[Stage1] FLAME 3D landmarks OK, range: '
+                      f'x=[{flame_lmks_3d[:,0].min():.4f}, {flame_lmks_3d[:,0].max():.4f}], '
+                      f'y=[{flame_lmks_3d[:,1].min():.4f}, {flame_lmks_3d[:,1].max():.4f}]')
+            else:
+                print('[Stage1] WARNING: FLAME 3D landmarks FAILED — no mesh overlay possible')
 
             summary_strip = vis.save_summary(
                 aligned_image=aligned_img,

@@ -432,14 +432,12 @@ def _project_vertices_similarity(
     flame_lmks_3d: np.ndarray,
     lmks_2d: np.ndarray,
 ) -> np.ndarray | None:
-    """Project FLAME vertices to 2D by fitting a similarity transform.
+    """Project FLAME vertices to 2D by fitting an affine transform.
 
-    Fits scale + rotation + translation from FLAME 3D landmarks (x, -y)
-    to detected 2D landmarks using cv2.estimateAffinePartial2D (RANSAC).
-    Then applies the same transform to all mesh vertices.
-
-    This is the simplest correct approach: no DECA camera chain needed,
-    just direct 3D-landmark-to-2D-landmark correspondence.
+    Fits a full affine (6 DOF: scale_x, scale_y, rotation, shear, tx, ty)
+    from FLAME 3D landmarks (x, -y) to detected 2D landmarks.
+    Full affine handles non-frontal faces better than similarity (4 DOF)
+    because it can capture perspective foreshortening as anisotropic scaling.
 
     Args:
         vertices: [V, 3] FLAME mesh vertices in meters
@@ -450,8 +448,6 @@ def _project_vertices_similarity(
         [V, 2] projected 2D pixel coordinates, or None on failure
     """
     # Use interior landmarks only (17-67) to avoid jawline contour mismatch.
-    # FLAME's seletec_3d68 gives static jawline positions, but 2D detectors
-    # use dynamic contour (visible silhouette), causing mismatch at non-frontal.
     interior = slice(17, 68)
 
     # FLAME: x=right, y=up → image: x=right, y=down
@@ -462,14 +458,31 @@ def _project_vertices_similarity(
 
     dst = lmks_2d[interior, :2].astype(np.float32)
 
-    # estimateAffinePartial2D: 4 DOF (scale, rotation, tx, ty) with RANSAC
-    M, inliers = cv2.estimateAffinePartial2D(src, dst, method=cv2.RANSAC)
+    # Diagnostic: check input ranges
+    print(f'[Vis] Affine fit: src range x=[{src[:,0].min():.4f}, {src[:,0].max():.4f}], '
+          f'y=[{src[:,1].min():.4f}, {src[:,1].max():.4f}]')
+    print(f'[Vis] Affine fit: dst range x=[{dst[:,0].min():.1f}, {dst[:,0].max():.1f}], '
+          f'y=[{dst[:,1].min():.1f}, {dst[:,1].max():.1f}]')
+
+    # Full affine (6 DOF) with RANSAC — handles perspective foreshortening
+    M, inliers = cv2.estimateAffine2D(src, dst, method=cv2.RANSAC)
     if M is None:
+        print('[Vis] WARNING: Affine fit FAILED (M is None)')
         return None
+
+    # Diagnostic: check fit quality
+    n_inliers = int(inliers.sum()) if inliers is not None else 0
+    src_h = np.concatenate([src, np.ones((len(src), 1), dtype=np.float32)], axis=1)
+    projected = (M @ src_h.T).T
+    residual = np.sqrt(((projected - dst) ** 2).sum(axis=1)).mean()
+    print(f'[Vis] Affine fit: inliers={n_inliers}/{len(src)}, mean_residual={residual:.1f}px, '
+          f'M=[[{M[0,0]:.1f}, {M[0,1]:.1f}, {M[0,2]:.1f}], [{M[1,0]:.1f}, {M[1,1]:.1f}, {M[1,2]:.1f}]]')
+
+    if residual > 20.0:
+        print(f'[Vis] WARNING: High residual ({residual:.1f}px) — projection may be inaccurate')
 
     # Apply to all vertices
     verts_xy = np.stack([vertices[:, 0], -vertices[:, 1]], axis=1).astype(np.float32)
-    # M is [2, 3]: dst = M @ [x, y, 1]^T
     ones = np.ones((verts_xy.shape[0], 1), dtype=np.float32)
     verts_h = np.concatenate([verts_xy, ones], axis=1)  # [V, 3]
     pts_2d = (M @ verts_h.T).T  # [V, 2]
