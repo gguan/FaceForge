@@ -674,6 +674,7 @@ def _render_mesh_phong(
 
     raster_settings = RasterizationSettings(
         image_size=512, blur_radius=0.0, faces_per_pixel=1,
+        cull_backfaces=True,  # hide FLAME inner mouth/eye cavity
     )
     # Full ambient lights (shading already baked into vertex colors)
     lights = PointLights(
