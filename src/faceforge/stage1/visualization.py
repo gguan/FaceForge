@@ -10,6 +10,7 @@ import numpy as np
 import torch
 from pytorch3d.renderer import (
     BlendParams,
+    FoVPerspectiveCameras,
     MeshRasterizer,
     MeshRenderer,
     OrthographicCameras,
@@ -17,6 +18,7 @@ from pytorch3d.renderer import (
     RasterizationSettings,
     SoftPhongShader,
     TexturesVertex,
+    look_at_view_transform,
 )
 from pytorch3d.structures import Meshes
 
@@ -376,39 +378,24 @@ class Stage1Visualizer:
         else:
             panels.append(np.zeros((size, size, 3), dtype=np.uint8))
 
-        # Panel 4: Solid mesh overlay (flame-head-tracker style Phong shading)
-        if vertices is not None and faces is not None:
+        # Panel 4: Phong-shaded mesh aligned to the image via DECA projection
+        if vertices is not None and faces is not None and device is not None:
             img_size = aligned_image.shape[0]
-            can_render = (
-                flame_lmks_3d is not None
-                and device is not None
-            )
-            if can_render:
-                pts_2d = None
-                if deca_cam is not None and deca_crop_tform is not None and align_M is not None:
-                    pts_2d = _project_vertices_deca(
-                        vertices, deca_cam, deca_crop_tform, align_M,
-                    )
-                elif lmks_68 is not None:
-                    pts_2d = _project_vertices_similarity(
-                        vertices, flame_lmks_3d, lmks_68,
-                    )
-                if pts_2d is not None:
-                    verts_ndc = _compute_ndc_from_pixels_direct(
-                        vertices, pts_2d, img_size,
-                    )
-                    rendered, foreground_mask = _render_mesh_phong(
-                        vertices, verts_ndc, faces, device, render_size=img_size,
-                    )
-                    # DECA-style: rendered mesh on black background
-                    mesh_vis = rendered
-                else:
-                    mesh_vis = aligned_image.copy()
+            pts_2d = None
+            if deca_cam is not None and deca_crop_tform is not None and align_M is not None:
+                pts_2d = _project_vertices_deca(
+                    vertices, deca_cam, deca_crop_tform, align_M,
+                )
+            elif flame_lmks_3d is not None and lmks_68 is not None:
+                pts_2d = _project_vertices_similarity(
+                    vertices, flame_lmks_3d, lmks_68,
+                )
+            if pts_2d is not None:
+                mesh_vis = _render_mesh_aligned(
+                    vertices, faces, pts_2d, img_size, device,
+                )
             else:
-                # Fallback: wireframe
-                mesh_vis = aligned_image.copy()
-                pts_2d = _project_vertices_ortho(vertices, img_size)
-                _draw_wireframe(mesh_vis, pts_2d, faces, color=(0, 255, 255), thickness=1)
+                mesh_vis = _render_mesh_front_view(vertices, faces, device)
             panels.append(_resize(mesh_vis))
         else:
             panels.append(np.zeros((size, size, 3), dtype=np.uint8))
@@ -420,6 +407,101 @@ class Stage1Visualizer:
             cv2.cvtColor(summary, cv2.COLOR_RGB2BGR),
         )
         return summary
+
+
+@torch.no_grad()
+def _render_mesh_aligned(
+    vertices: np.ndarray,
+    faces: np.ndarray,
+    pts_2d: np.ndarray,
+    image_size: int,
+    device: str,
+) -> np.ndarray:
+    """Render mesh with PyTorch3D, aligned to the image via DECA projection.
+
+    Uses pts_2d (DECA-projected pixel positions) to fit an OrthographicCameras
+    transform, then renders with SoftPhongShader for proper lighting.
+
+    Args:
+        vertices: [V, 3] FLAME vertices in meters
+        faces: [F, 3] face indices
+        pts_2d: [V, 2] projected pixel coords in aligned image
+        image_size: aligned image dimension (e.g. 512)
+        device: torch device string
+
+    Returns:
+        rendered_img [image_size, image_size, 3] uint8 RGB
+    """
+    verts_t = torch.from_numpy(vertices).float().to(device)
+    faces_world_t = torch.from_numpy(faces).long().to(device)
+    # x-flip + y-flip = even number of flips → handedness preserved, no winding change
+    faces_t = faces_world_t
+
+    # Convert pts_2d (pixels) to PyTorch3D NDC: [-1, 1], y-up
+    # pixels: (0,0)=top-left, (img,img)=bottom-right
+    # NDC:    (-1,-1)=bottom-left, (1,1)=top-right
+    # PyTorch3D screen: x-left, y-up; pixels: x-right, y-down
+    ndc_x = -(pts_2d[:, 0] / image_size * 2.0 - 1.0)  # flip x
+    ndc_y = -(pts_2d[:, 1] / image_size * 2.0 - 1.0)   # flip y
+
+    # Fit 2D affine: world (x, y) → NDC (ndc_x, ndc_y)
+    # Using least-squares on FLAME xy → projected NDC xy
+    wx = vertices[:, 0]
+    wy = vertices[:, 1]
+    # ndc_x ≈ a * wx + b * wy + c
+    # ndc_y ≈ d * wx + e * wy + f
+    A = np.column_stack([wx, wy, np.ones(len(wx))])
+    params_x, _, _, _ = np.linalg.lstsq(A, ndc_x, rcond=None)
+    params_y, _, _, _ = np.linalg.lstsq(A, ndc_y, rcond=None)
+
+    # Construct verts_ndc using the fitted affine + z for depth
+    fitted_ndc_x = A @ params_x
+    fitted_ndc_y = A @ params_y
+
+    # z depth: scale world z so closer vertices (larger z) have smaller NDC z
+    # (PyTorch3D: smaller z = closer to camera)
+    z_world = vertices[:, 2]
+    z_range = z_world.max() - z_world.min()
+    # Map z to [0.1, 1.0] range, with larger world z → smaller NDC z
+    ndc_z = 0.1 + 0.9 * (z_world.max() - z_world) / max(z_range, 1e-8)
+
+    verts_ndc = torch.from_numpy(
+        np.stack([fitted_ndc_x, fitted_ndc_y, ndc_z], axis=1)
+    ).float().to(device)
+
+    # Compute lighting in world space (normals make sense here), bake into vertex colors
+    normals = _compute_vertex_normals(verts_t, faces_world_t)
+    vertex_color = _compute_deca_vertex_colors(normals, device=device)
+
+    mesh = Meshes(verts=verts_ndc[None], faces=faces_t[None])
+    mesh.textures = TexturesVertex(verts_features=vertex_color[None])
+
+    # Identity camera — vertices are already in NDC
+    cameras = OrthographicCameras(device=device)
+
+    # Ambient-only: shading is pre-baked in vertex colors
+    lights = PointLights(
+        device=device, location=[[0.0, 0.0, 0.0]],
+        ambient_color=[[1.0, 1.0, 1.0]],
+        diffuse_color=[[0.0, 0.0, 0.0]],
+        specular_color=[[0.0, 0.0, 0.0]],
+    )
+
+    raster_settings = RasterizationSettings(
+        image_size=image_size, blur_radius=0.0, faces_per_pixel=1,
+        cull_backfaces=True,
+    )
+    renderer = MeshRenderer(
+        rasterizer=MeshRasterizer(cameras=cameras, raster_settings=raster_settings),
+        shader=SoftPhongShader(
+            device=device, cameras=cameras, lights=lights,
+            blend_params=BlendParams(background_color=(0.0, 0.0, 0.0)),
+        ),
+    )
+
+    image = renderer(mesh)
+    image = (image[0, ..., :3].cpu().numpy().clip(0, 1) * 255).astype(np.uint8)
+    return image
 
 
 def save_summary_grid(
@@ -563,15 +645,18 @@ def _compute_ndc_from_pixels_direct(
     Returns:
         [V, 3] NDC coordinates
     """
-    ndc_xy = pts_2d / image_size * 2.0 - 1.0
+    ndc_x = pts_2d[:, 0] / image_size * 2.0 - 1.0
+    # Flip y: pixel y-down → NDC y-up
+    ndc_y = -(pts_2d[:, 1] / image_size * 2.0 - 1.0)
     # Estimate effective scale from the projection (pixels per meter)
-    # Use the range of projected x to estimate
     verts_x_range = vertices[:, 0].max() - vertices[:, 0].min()
     pts_x_range = pts_2d[:, 0].max() - pts_2d[:, 0].min()
     eff_scale = pts_x_range / max(verts_x_range, 1e-8)
-    # z: closer vertices (larger FLAME z) → smaller NDC z
-    ndc_z = -eff_scale * vertices[:, 2] / image_size * 2.0
-    return np.stack([ndc_xy[:, 0], ndc_xy[:, 1], ndc_z], axis=1)
+    # z: PyTorch3D requires z > 0 for visible geometry.
+    # Use FLAME z for relative depth ordering, shifted to be all-positive.
+    z_scaled = eff_scale * vertices[:, 2] / image_size * 2.0
+    ndc_z = z_scaled - z_scaled.min() + 1.0  # ensure all z > 0
+    return np.stack([ndc_x, ndc_y, ndc_z], axis=1)
 
 
 def _compute_vertex_normals(
@@ -637,54 +722,72 @@ def _compute_deca_vertex_colors(
 
 
 @torch.no_grad()
-def _render_mesh_phong(
+def _render_mesh_front_view(
     vertices: np.ndarray,
-    verts_ndc: np.ndarray,
     faces: np.ndarray,
     device: str,
-    render_size: int = 256,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Render solid Phong-shaded mesh via PyTorch3D.
+    render_size: int = 512,
+) -> np.ndarray:
+    """Render Phong-shaded mesh from the front using PyTorch3D.
 
-    Ported from flame-head-tracker utils/general_utils.py render_geometry().
+    Uses FoVPerspectiveCameras + look_at_view_transform for a clean
+    front-view render, matching the approach in test_render_mesh.py.
 
     Args:
-        vertices: [V, 3] world-space FLAME vertices (for normal computation)
-        verts_ndc: [V, 3] NDC coordinates (for rasterization position)
+        vertices: [V, 3] FLAME vertices in meters
         faces: [F, 3] face indices
-        device: torch device string (e.g. 'cuda:0')
+        device: torch device string
         render_size: output image size
 
     Returns:
-        (rendered_img [H, W, 3] uint8 RGB, foreground_mask [H, W] uint8)
+        rendered_img [H, W, 3] uint8 RGB
     """
-    faces_t = torch.from_numpy(faces).to(device)
-    verts_t = torch.from_numpy(vertices).float().to(device)
-    verts_ndc_t = torch.from_numpy(verts_ndc).float().to(device)
+    # Convert meters → mm for camera distance calculation
+    verts_mm = vertices * 1000.0
+    verts_t = torch.from_numpy(verts_mm).float().to(device)
+    faces_t = torch.from_numpy(faces).long().to(device)
 
-    # Compute vertex normals and DECA-style multi-light shading
-    normals = _compute_vertex_normals(verts_t, faces_t)
-    vertex_color = _compute_deca_vertex_colors(normals, device=device)
+    # Gray material
+    gray_color = torch.ones_like(verts_t)[None] * 0.7
+    mesh = Meshes(verts=verts_t[None], faces=faces_t[None])
+    mesh.textures = TexturesVertex(verts_features=gray_color)
 
-    # Build PyTorch3D mesh with baked vertex colors
-    mesh = Meshes(verts=verts_ndc_t[None], faces=faces_t[None])
-    mesh.textures = TexturesVertex(verts_features=vertex_color[None])
+    # Camera: look at face center from front, framed like aligned image.
+    # Use front-facing vertices (z > median) to find face center,
+    # then set distance so the face span fills ~70% of the frame.
+    z_med = verts_t[:, 2].median()
+    front_mask = verts_t[:, 2] > z_med
+    face_verts = verts_t[front_mask]
+    face_center = face_verts.mean(0)
+    face_span = (face_verts.max(0).values - face_verts.min(0).values).max().item()
 
-    # OrthographicCameras: identity with x,y flipped (same as flame-head-tracker)
-    R = torch.eye(3, device=device)
-    R[0, 0] = -1.0
-    R[1, 1] = -1.0
-    cameras = OrthographicCameras(device=device, R=R[None], T=torch.zeros(1, 3, device=device))
+    # FoV → distance = span / (2 * tan(fov/2)) / fill_ratio
+    import math
+    fov = 30.0
+    fill_ratio = 0.85
+    cam_dist = face_span / (2.0 * math.tan(math.radians(fov / 2.0))) / fill_ratio
+
+    # Shift look-at point slightly down to match FFHQ-style framing
+    # (aligned images center between eyes, with more forehead than chin)
+    cx = face_center[0].item()
+    cy = face_center[1].item() - face_span * 0.08
+    cz = face_center[2].item()
+    eye = (cx, cy, cz + cam_dist)
+    at = (cx, cy, cz)
+    R, T = look_at_view_transform(eye=(eye,), at=(at,), up=((0, 1, 0),))
+    cameras = FoVPerspectiveCameras(
+        device=device, R=R.to(device), T=T.to(device),
+        fov=fov, znear=1.0, zfar=cam_dist * 3,
+    )
+
+    # Lighting: in front of face, slightly above
+    lights = PointLights(
+        device=device,
+        location=[[eye[0], eye[1] + face_span * 0.3, eye[2]]],
+    )
 
     raster_settings = RasterizationSettings(
-        image_size=512, blur_radius=0.0, faces_per_pixel=1,
-    )
-    # Full ambient lights (shading already baked into vertex colors)
-    lights = PointLights(
-        device=device, location=[[0.0, 0.0, 0.0]],
-        ambient_color=[[1.0, 1.0, 1.0]],
-        diffuse_color=[[0.0, 0.0, 0.0]],
-        specular_color=[[0.0, 0.0, 0.0]],
+        image_size=render_size, blur_radius=0.0, faces_per_pixel=1,
     )
     renderer = MeshRenderer(
         rasterizer=MeshRasterizer(cameras=cameras, raster_settings=raster_settings),
@@ -695,13 +798,8 @@ def _render_mesh_phong(
     )
 
     image = renderer(mesh)
-    alpha = image[0, ..., 3].cpu().numpy()
-    foreground_mask = (alpha > 0).astype(np.uint8)
-    image = (image[0, ..., :3].cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
-
-    image = cv2.resize(image, (render_size, render_size))
-    foreground_mask = cv2.resize(foreground_mask, (render_size, render_size))
-    return image, foreground_mask
+    image = (image[0, ..., :3].cpu().numpy().clip(0, 1) * 255).astype(np.uint8)
+    return image
 
 
 def _compute_ndc_from_pixels(

@@ -26,12 +26,28 @@ class DECAInference:
         if project_root not in sys.path:
             sys.path.insert(0, project_root)
 
-        from submodules.decalib.deca import DECA
         from submodules.decalib.deca_utils.config import cfg as deca_cfg
 
-        deca_cfg.model.use_tex = True
+        # Patch FAN face detector to use the correct device BEFORE importing DECA
+        # (DECA imports FAN at module level from .deca_utils.detectors)
+        import face_alignment
+        from submodules.decalib.deca_utils import detectors as _det
+        _OrigFAN = _det.FAN
+        _device = self.device
+        class _PatchedFAN(_OrigFAN):
+            def __init__(self):
+                self.model = face_alignment.FaceAlignment(
+                    face_alignment.LandmarksType.TWO_D,
+                    flip_input=False,
+                    device=str(_device),
+                )
+        _det.FAN = _PatchedFAN
+
+        from submodules.decalib.deca import DECA
+
+        deca_cfg.model.use_tex = False
         deca_cfg.rasterizer_type = 'pytorch3d'
-        deca_cfg.model.extract_tex = True
+        deca_cfg.model.extract_tex = False
 
         # Resolve model paths
         models_dir = os.path.join(project_root, 'data', 'pretrained')
