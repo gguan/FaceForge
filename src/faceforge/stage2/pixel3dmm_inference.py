@@ -49,12 +49,16 @@ class Pixel3DMMInference:
 
         # weights_only=False needed for omegaconf-based checkpoints (PyTorch >= 2.6)
         # strict=False because checkpoints contain extra FLAME/camera keys not in the model
+        # NOTE: pixel3dmm's network_inference.py intentionally does NOT call .eval()
+        # (L110: "# model.eval()").  BatchNorm in train mode uses per-batch stats
+        # which produces different (higher contrast) outputs than eval mode's running
+        # stats.  We replicate this to match pixel3dmm's reference outputs exactly.
         self._uv_model = P3DMMSystem.load_from_checkpoint(
             uv_ckpt, map_location=self.device, weights_only=False, strict=False,
-        ).to(self.device).eval()
+        ).to(self.device)
         self._normal_model = P3DMMSystem.load_from_checkpoint(
             normal_ckpt, map_location=self.device, weights_only=False, strict=False,
-        ).to(self.device).eval()
+        ).to(self.device)
 
     @torch.no_grad()
     def predict(self, aligned_image: torch.Tensor,

@@ -3,10 +3,9 @@
 Quick-test script for the Stage 1 pipeline.
 
 Usage:
-    python scripts/run_stage1.py --image path/to/face.jpg
-    python scripts/run_stage1.py --image path/to/face.jpg --device cuda:0 --debug
-    python scripts/run_stage1.py --image img1.jpg img2.jpg img3.jpg  # multi-image
-    python scripts/run_stage1.py --image path/to/image_dir/            # directory of images
+    python scripts/run_stage1.py --images path/to/face.jpg
+    python scripts/run_stage1.py --images img1.jpg img2.jpg img3.jpg --device cuda:0 --debug
+    python scripts/run_stage1.py --image-dir assets/tom/
 """
 
 import argparse
@@ -29,10 +28,14 @@ def parse_args():
         description='Run FaceForge Stage 1: image → FLAME parameters',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument(
-        '--image', nargs='+', required=True, metavar='PATH',
-        help='Input face image(s) or directory. '
-             'If a directory is given, all images inside are used.',
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument(
+        '--images', nargs='+', metavar='PATH',
+        help='Input face image path(s).',
+    )
+    group.add_argument(
+        '--image-dir', metavar='DIR',
+        help='Directory of input images.',
     )
     parser.add_argument(
         '--output', default='output', metavar='DIR',
@@ -55,8 +58,12 @@ def parse_args():
         help='Data directory (default: <project_root>/data).',
     )
     parser.add_argument(
-        '--aggregation', choices=['median', 'mean'], default='median',
-        help='Shape aggregation method when multiple images are supplied.',
+        '--aggregation', choices=['median', 'mean'], default=None,
+        help='Shape aggregation method when multiple images are supplied (overrides config.yaml).',
+    )
+    parser.add_argument(
+        '--config', default=None, metavar='PATH',
+        help='Path to config.yaml (default: project root config.yaml).',
     )
     return parser.parse_args()
 
@@ -137,7 +144,7 @@ def main():
 
     print('FaceForge — Stage 1')
     print(f'  device:     {args.device}')
-    print(f'  images:     {args.image}')
+    print(f'  images:     {args.images or args.image_dir}')
     print(f'  output:     {args.output}')
     print(f'  debug:      {args.debug}')
     print(f'  data_dir:   {data_dir}')
@@ -145,23 +152,28 @@ def main():
 
     # ── expand & load images ────────────────────────────────────────────────
     print('Loading images...')
-    image_paths = _expand_paths(args.image)
+    raw_paths = args.images if args.images else [args.image_dir]
+    image_paths = _expand_paths(raw_paths)
     images, image_paths = _load_images(image_paths)
     print(f'  Total images: {len(images)}')
 
     # ── build config ─────────────────────────────────────────────────────────
     from faceforge.stage1 import Stage1Config, Stage1Pipeline
+    from faceforge._config_loader import load_stage1_overrides
 
-    config = Stage1Config(
-        mica_model_path=os.path.join(data_dir, 'pretrained', 'mica.tar'),
-        mediapipe_model_path=os.path.join(data_dir, 'pretrained', 'mediapipe', 'face_landmarker.task'),
-        flame_model_path=os.path.join(data_dir, 'pretrained', 'FLAME2020', 'generic_model.pkl'),
-        flame_masks_path=os.path.join(data_dir, 'pretrained', 'FLAME2020', 'FLAME_masks.pkl'),
-        device=args.device,
-        output_dir=args.output,
-        save_debug=args.debug,
-        aggregation_method=args.aggregation,
-    )
+    # CLI overrides: only apply if explicitly set by user
+    cli_overrides = {
+        'mica_model_path': os.path.join(data_dir, 'pretrained', 'mica.tar'),
+        'mediapipe_model_path': os.path.join(data_dir, 'pretrained', 'mediapipe', 'face_landmarker.task'),
+        'flame_model_path': os.path.join(data_dir, 'pretrained', 'FLAME2020', 'generic_model.pkl'),
+        'flame_masks_path': os.path.join(data_dir, 'pretrained', 'FLAME2020', 'FLAME_masks.pkl'),
+        'device': args.device,
+        'output_dir': args.output,
+        'save_debug': args.debug,
+        **(({'aggregation_method': args.aggregation}) if args.aggregation else {}),
+    }
+
+    config = Stage1Config(**{**load_stage1_overrides(args.config), **cli_overrides})
 
     # ── initialise pipeline ──────────────────────────────────────────────────
     print('\nInitialising models (first run downloads InsightFace weights)...')

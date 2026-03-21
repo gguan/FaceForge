@@ -1,3 +1,17 @@
+"""Stage 2 configuration.
+
+Default values follow pixel3dmm multi-image tracking recommendations.
+All fields can be overridden via config.yaml (see project root) or
+by passing keyword arguments directly.
+
+Usage::
+
+    from faceforge._config_loader import load_stage2_overrides
+    from faceforge.stage2.config import Stage2Config
+
+    cfg = Stage2Config(**{**load_stage2_overrides(), 'device': 'cuda:0'})
+"""
+
 from dataclasses import dataclass, field
 
 from faceforge._paths import default_device
@@ -5,11 +19,6 @@ from faceforge._paths import default_device
 
 @dataclass
 class Stage2Config:
-    # === pixel3dmm 兼容模式 ===
-    # True: 仅使用 pixel3dmm 的 loss/权重/LR/步数，屏蔽其他来源的 loss
-    # False: 使用完整的多源 loss 组合
-    pixel3dmm_compat: bool = True
-
     # === 模型路径 ===
     flame_model_path: str = 'data/pretrained/FLAME2020/generic_model.pkl'
     flame_masks_path: str = 'data/pretrained/FLAME2020/FLAME_masks.pkl'
@@ -24,46 +33,46 @@ class Stage2Config:
     render_size: int = 512
     use_opengl: bool = False
 
-    # === 5 阶段步数 ===
-    coarse_lmk_steps: int = 100
+    # === 5 阶段步数 (ref: pixel3dmm tracker.py) ===
+    coarse_lmk_steps: int = 500
     coarse_uv_steps: int = 100
-    medium_steps: int = 500
-    fine_pca_steps: int = 150
-    fine_detail_steps: int = 150
+    medium_steps: int = 200
+    fine_pca_steps: int = 0
+    fine_detail_steps: int = 0
     enable_fine_detail: bool = False
 
-    # === 学习率 ===
-    lr_shape: float = 0.005
-    lr_expression: float = 0.01
-    lr_head_pose: float = 0.01
-    lr_jaw_pose: float = 0.01
-    lr_focal: float = 0.02
+    # === 学习率 (ref: pixel3dmm defaults) ===
+    lr_shape: float = 0.002
+    lr_expression: float = 0.005
+    lr_head_pose: float = 0.005
+    lr_jaw_pose: float = 0.005
     lr_translation: float = 0.001
+    lr_focal: float = 0.02
     lr_texture: float = 0.005
     lr_lighting: float = 0.01
     lr_texture_disp: float = 0.001
 
-    # === Loss 权重 ===
-    w_landmark: float = 1.0
-    w_pixel3dmm_uv: float = 50.0
-    w_normal: float = 10.0
-    w_sil: float = 1.0
-    w_contour: float = 5.0
-    w_region_weight: float = 2.0
-    w_photometric: float = 2.0
-    w_identity: float = 0.5
+    # === Loss 权重 (ref: pixel3dmm tracker.py) ===
+    w_landmark: float = 5000.0
+    w_pixel3dmm_uv: float = 2000.0
+    w_normal: float = 1000.0
+    w_sil: float = 500.0
+    w_contour: float = 0.0
+    w_region_weight: float = 0.0
+    w_photometric: float = 0.0
+    w_identity: float = 0.0
 
-    # === PRDL A/B 切换 ===
+    # === PRDL (experimental) ===
     use_prdl: bool = False
-    w_prdl: float = 5.0
+    w_prdl: float = 0.0
 
-    # === 正则化 ===
-    w_reg_shape_to_mica: float = 1e-4
-    w_reg_shape_to_zero: float = 1e-6
-    w_reg_expression: float = 1e-3
-    w_reg_jaw: float = 1e-3
-    w_reg_sh_mono: float = 1.0
-    w_reg_tex_tv: float = 100.0
+    # === 正则化 (ref: pixel3dmm defaults) ===
+    w_reg_shape_to_mica: float = 0.2
+    w_reg_shape_to_zero: float = 0.05
+    w_reg_expression: float = 0.05
+    w_reg_jaw: float = 0.01
+    w_reg_sh_mono: float = 0.0
+    w_reg_tex_tv: float = 0.0
 
     # === UV 对应阈值 ===
     uv_delta_coarse: float = 0.00005
@@ -71,13 +80,9 @@ class Stage2Config:
     uv_delta_fine: float = 0.00002
     uv_dist_fine: float = 8.0
 
-    # === 遮挡过滤 ===
-    use_occlusion_filter: bool = True
-    occlusion_depth_eps: float = 0.01
-
     # === Normal loss ===
-    normal_delta_threshold: float = 0.33   # ref: pixel3dmm default
-    normal_eye_dilate_kernel: int = 13     # ref: pixel3dmm Gaussian blur kernel
+    normal_delta_threshold: float = 0.33
+    normal_eye_dilate_kernel: int = 13
 
     # === Landmark ===
     nose_landmark_weight: float = 3.0
@@ -89,6 +94,10 @@ class Stage2Config:
     use_nan_guard: bool = True
     focal_length_min: float = 1.5
     focal_length_max: float = 8.0
+
+    # === 遮挡过滤 ===
+    use_occlusion_filter: bool = True
+    occlusion_depth_eps: float = 0.01
 
     # === 早停 ===
     use_early_stopping: bool = True
@@ -105,49 +114,3 @@ class Stage2Config:
     output_dir: str = 'output'
     save_debug: bool = True
     device: str = field(default_factory=default_device)
-
-    def __post_init__(self):
-        if self.pixel3dmm_compat:
-            self._apply_pixel3dmm_compat()
-
-    def _apply_pixel3dmm_compat(self):
-        """Override all weights/LR/steps to match pixel3dmm tracker defaults.
-
-        Ref: pixel3dmm tracking/tracker.py + configs/tracking.yaml
-        """
-        # --- Loss weights (pixel3dmm per-frame online stage) ---
-        self.w_landmark = 5000.0        # lmk_eye2 (only eyes 36-48)
-        self.w_pixel3dmm_uv = 2000.0    # uv correspondence
-        self.w_normal = 1000.0          # L1 normal
-        self.w_sil = 500.0              # silhouette
-
-        # Disable non-pixel3dmm losses
-        self.w_contour = 0.0            # HRN
-        self.w_region_weight = 0.0      # HiFace
-        self.w_photometric = 0.0        # flame-head-tracker
-        self.w_identity = 0.0           # ArcFace
-        self.use_prdl = False
-        self.w_prdl = 0.0               # 3DDFA-V3
-
-        # --- Regularization (pixel3dmm defaults) ---
-        self.w_reg_shape_to_mica = 0.2
-        self.w_reg_shape_to_zero = 0.05
-        self.w_reg_expression = 0.05
-        self.w_reg_jaw = 0.01
-        self.w_reg_sh_mono = 0.0        # pixel3dmm doesn't use
-        self.w_reg_tex_tv = 0.0         # pixel3dmm doesn't use
-
-        # --- Learning rates (pixel3dmm defaults) ---
-        self.lr_shape = 0.002
-        self.lr_expression = 0.005
-        self.lr_head_pose = 0.005
-        self.lr_jaw_pose = 0.005
-        # lr_translation = 0.001 (already matches)
-        # lr_focal = 0.02 (already matches)
-
-        # --- Steps (pixel3dmm: 500 camera + 200 online) ---
-        self.coarse_lmk_steps = 500
-        self.coarse_uv_steps = 100
-        self.medium_steps = 200
-        self.fine_pca_steps = 0         # skip (pixel3dmm has no separate fine stage)
-        self.fine_detail_steps = 0      # skip

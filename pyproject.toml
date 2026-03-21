@@ -8,6 +8,58 @@ version = "0.1.0"
 requires-python = ">=3.10"
 description = "Identity-aware 3D face reconstruction and tracking"
 
+dependencies = [
+    # --- Core ---
+    "numpy>=1.24",
+    "torch>=2.1",
+    "torchvision>=0.16",
+    "opencv-python>=4.8",
+    "Pillow>=10.0",
+    "scipy>=1.11",
+    "scikit-image>=0.21",
+
+    # --- Face detection & landmarks ---
+    "mediapipe>=0.10",
+    "insightface>=0.7",
+    "onnxruntime>=1.16",          # insightface backend (swap to onnxruntime-gpu for CUDA)
+    "face-alignment>=1.4",        # FAN detector used by DECA
+
+    # --- FLAME / config ---
+    "yacs>=0.1.8",                # MICA & DECA configs
+    "omegaconf>=2.3",             # pixel3dmm configs
+    "loguru>=0.7",                # MICA logging
+    "chumpy>=0.70",               # FLAME model pkl loading
+
+    # --- Deep-learning utilities ---
+    "pytorch-lightning>=2.0",     # pixel3dmm checkpoint loading
+    "kornia>=0.7",                # DECA differentiable CV ops
+    "einops>=0.7",                # pixel3dmm network
+    "timm>=0.9",                  # pixel3dmm backbone
+    "fvcore>=0.1.5",              # pytorch3d dependency
+    "ninja>=1.11",                # JIT build for nvdiffrast & pytorch3d
+
+    # --- Mesh ---
+    "trimesh>=4.0",               # REALY eval mesh I/O
+]
+
+[project.optional-dependencies]
+# GPU-accelerated rendering (install from source, matching torch+CUDA version)
+render = [
+    # pytorch3d: pip install git+https://github.com/facebookresearch/pytorch3d.git@stable
+    # nvdiffrast: pip install git+https://github.com/NVlabs/nvdiffrast.git
+]
+viz = [
+    "matplotlib>=3.8",
+]
+eval = [
+    "open3d>=0.17",               # REALY benchmark ICP
+]
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+    "ruff>=0.1",
+]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
