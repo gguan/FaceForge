@@ -22,10 +22,11 @@ def main():
     group.add_argument('--images', nargs='+', help='Input image paths')
     group.add_argument('--image-dir', type=str, help='Directory of input images')
     parser.add_argument('--subject', type=str, default='default', help='Subject name')
-    parser.add_argument('--device', type=str, default='cuda:0')
+    parser.add_argument('--device', type=str, default=None, help='Device (default: auto)')
     parser.add_argument('--debug', action='store_true', help='Save debug visualizations')
     parser.add_argument('--use-prdl', action='store_true', help='Use PRDL instead of baseline')
-    parser.add_argument('--output-dir', type=str, default='output')
+    parser.add_argument('--output-dir', type=str, default=None)
+    parser.add_argument('--config', type=str, default=None, help='Path to config.yaml (default: project root config.yaml)')
     args = parser.parse_args()
 
     # Collect image paths
@@ -53,9 +54,21 @@ def main():
             continue
         images_rgb.append(img[:, :, ::-1].copy())  # BGR → RGB
 
+    # Load project config
+    from faceforge._config_loader import load_stage1_overrides, load_stage2_overrides
+    s1_overrides = load_stage1_overrides(args.config)
+    s2_overrides = load_stage2_overrides(args.config)
+
     # Stage 1
     from faceforge.stage1 import Stage1Pipeline, Stage1Config
-    s1_config = Stage1Config(device=args.device, output_dir=args.output_dir, save_debug=args.debug)
+    s1_config = Stage1Config(
+        **{
+            **s1_overrides,
+            **(({'device': args.device}) if args.device else {}),
+            **(({'output_dir': args.output_dir}) if args.output_dir else {}),
+            'save_debug': args.debug,
+        }
+    )
     s1 = Stage1Pipeline(s1_config)
 
     print('Running Stage 1...')
@@ -71,10 +84,13 @@ def main():
     from faceforge.stage2.pipeline import Stage2Pipeline
 
     s2_config = Stage2Config(
-        device=args.device,
-        output_dir=args.output_dir,
-        save_debug=args.debug,
-        use_prdl=args.use_prdl,
+        **{
+            **s2_overrides,
+            **(({'device': args.device}) if args.device else {}),
+            **(({'output_dir': args.output_dir}) if args.output_dir else {}),
+            'save_debug': args.debug,
+            'use_prdl': args.use_prdl,
+        }
     )
 
     # Pass MICA model for identity loss

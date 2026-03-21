@@ -28,19 +28,23 @@ class DECAInference:
 
         from submodules.decalib.deca_utils.config import cfg as deca_cfg
 
-        # Patch FAN face detector to use the correct device BEFORE importing DECA
-        # (DECA imports FAN at module level from .deca_utils.detectors)
+        # Patch FAN face detector to inject the correct device BEFORE importing DECA.
+        # Original detectors.FAN.__init__ hardcodes no device arg; we replace the
+        # entire class (not subclass) to avoid inheriting a broken __init__ and to
+        # keep the same interface that DECA expects: FAN() → self.model / self.run().
         import face_alignment
         from submodules.decalib.deca_utils import detectors as _det
-        _OrigFAN = _det.FAN
+        _OrigFANRun = _det.FAN.run  # preserve original run() as an unbound method
         _device = self.device
-        class _PatchedFAN(_OrigFAN):
+        class _PatchedFAN:
             def __init__(self):
                 self.model = face_alignment.FaceAlignment(
                     face_alignment.LandmarksType.TWO_D,
                     flip_input=False,
                     device=str(_device),
                 )
+            def run(self, image):
+                return _OrigFANRun(self, image)
         _det.FAN = _PatchedFAN
 
         from submodules.decalib.deca import DECA
