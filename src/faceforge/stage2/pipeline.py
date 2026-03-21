@@ -92,6 +92,8 @@ class Stage2Pipeline:
     def _run_single(self, s1out: Stage1Output) -> Stage2Output:
         """Single image: straightforward 5-stage optimization."""
         preprocessed = [self._preprocess(s1out)]
+        if self.visualizer is not None:
+            self.visualizer.save_preprocessing(preprocessed)
         shared, per_image = self._init_params([s1out])
 
         # Setup UV correspondences
@@ -117,6 +119,8 @@ class Stage2Pipeline:
         """Multi-image: sequential per-image → global joint optimization."""
         N = len(s1outs)
         preprocessed = [self._preprocess(s1out) for s1out in s1outs]
+        if self.visualizer is not None:
+            self.visualizer.save_preprocessing(preprocessed)
         shared, per_image = self._init_params(s1outs)
 
         loss_agg = self._create_loss_aggregator(shared)
