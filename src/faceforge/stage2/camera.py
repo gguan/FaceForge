@@ -10,7 +10,7 @@ Reference: VHAP render_nvdiffrast.py L117-160 (clip projection),
 import torch
 import torch.nn.functional as F
 
-from .flame_model import batch_rodrigues
+from .flame_wrapper import batch_rodrigues
 
 
 def build_intrinsics(focal_length: torch.Tensor, principal_point: torch.Tensor,

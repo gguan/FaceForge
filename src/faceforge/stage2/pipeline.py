@@ -16,7 +16,7 @@ from faceforge._paths import PROJECT_ROOT
 from faceforge.stage1.data_types import Stage1Output
 from .config import Stage2Config
 from .data_types import PreprocessedData, SharedParams, PerImageParams, Stage2Output
-from .flame_model import FLAMEModel, batch_rodrigues
+from .flame_wrapper import FLAMEWrapper, batch_rodrigues
 from .camera import build_intrinsics, build_extrinsics, project_points, world_to_camera
 from .renderer import NvdiffrastRenderer
 from .pixel3dmm_inference import Pixel3DMMInference
@@ -42,8 +42,12 @@ class Stage2Pipeline:
         self.device = torch.device(self.config.device)
         self.visualizer = visualizer
 
-        # Load FLAME
-        self.flame = FLAMEModel(self.config).to(self.device)
+        # Configure pixel3dmm asset paths before creating any pixel3dmm objects
+        from ._pixel3dmm_paths import configure_pixel3dmm_paths
+        configure_pixel3dmm_paths(self.config)
+
+        # Load FLAME (delegates to pixel3dmm's FLAME internally)
+        self.flame = FLAMEWrapper(self.config).to(self.device)
 
         # Load renderer
         self.renderer = NvdiffrastRenderer(
@@ -99,10 +103,7 @@ class Stage2Pipeline:
         # Setup UV correspondences
         loss_agg = self._create_loss_aggregator(shared)
         loss_agg.setup_uv_loss(self.flame, 1)
-        loss_agg.uv_losses[0].compute_correspondences(
-            preprocessed[0].pixel3dmm_uv,
-            self.config.uv_delta_coarse, self.config.uv_dist_coarse,
-        )
+        loss_agg.uv_losses[0].compute_corresp(preprocessed[0].pixel3dmm_uv)
 
         loss_history = self._run_optimization(
             shared, per_image, preprocessed, loss_agg,
@@ -128,10 +129,7 @@ class Stage2Pipeline:
 
         # Setup UV correspondences for each image
         for i in range(N):
-            loss_agg.uv_losses[i].compute_correspondences(
-                preprocessed[i].pixel3dmm_uv,
-                self.config.uv_delta_coarse, self.config.uv_dist_coarse,
-            )
+            loss_agg.uv_losses[i].compute_corresp(preprocessed[i].pixel3dmm_uv)
 
         # Phase 1: Sequential (freeze shape, per-image optimization)
         shared.shape.requires_grad_(False)
@@ -195,8 +193,9 @@ class Stage2Pipeline:
             # Tighten UV thresholds at medium stage
             if stage == 'medium':
                 for uv_loss in loss_agg.uv_losses:
-                    uv_loss.tighten_thresholds(
-                        self.config.uv_delta_fine, self.config.uv_dist_fine)
+                    uv_loss.finish_stage1(
+                        delta_uv_fine=self.config.uv_delta_fine,
+                        dist_uv_fine=self.config.uv_dist_fine)
 
             selected = selected_fn()
             optimizer = self.opt_manager.create_optimizer(
