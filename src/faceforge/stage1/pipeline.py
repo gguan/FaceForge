@@ -100,12 +100,17 @@ class Stage1Pipeline:
             return_transform=True,
         )
 
-        # Project 68 landmarks into aligned image coordinates
-        lmks_68_orig = detection.lmks_68[:, :2].astype(np.float64)
-        ones = np.ones((lmks_68_orig.shape[0], 1), dtype=np.float64)
-        lmks_h = np.concatenate([lmks_68_orig, ones], axis=1)  # [68, 3]
-        lmks_aligned = (align_M @ lmks_h.T).T  # [68, 3]
-        lmks_68_aligned = lmks_aligned[:, :2] / lmks_aligned[:, 2:3]  # perspective divide
+        # Project all landmarks into aligned image coordinates
+        def _project_lmks(lmks_orig):
+            pts = lmks_orig[:, :2].astype(np.float64)
+            ones = np.ones((pts.shape[0], 1), dtype=np.float64)
+            pts_h = np.concatenate([pts, ones], axis=1)  # [N, 3]
+            pts_aligned = (align_M @ pts_h.T).T  # [N, 3]
+            return (pts_aligned[:, :2] / pts_aligned[:, 2:3]).astype(np.float32)
+
+        lmks_68_aligned = _project_lmks(detection.lmks_68)
+        lmks_dense_aligned = _project_lmks(detection.lmks_dense)
+        lmks_eyes_aligned = _project_lmks(detection.lmks_eyes)
 
         if vis:
             vis.save_alignment(image_rgb, aligned_img, detection.lmks_68)
@@ -221,9 +226,9 @@ class Stage1Pipeline:
             arcface_feat=mica_result['arcface_feat'],
             aligned_image=aligned_tensor,
             face_mask=mask_tensor,
-            lmks_68=torch.tensor(detection.lmks_68).unsqueeze(0),
-            lmks_dense=torch.tensor(detection.lmks_dense).unsqueeze(0),
-            lmks_eyes=torch.tensor(detection.lmks_eyes).unsqueeze(0),
+            lmks_68=torch.tensor(lmks_68_aligned).unsqueeze(0),
+            lmks_dense=torch.tensor(lmks_dense_aligned).unsqueeze(0),
+            lmks_eyes=torch.tensor(lmks_eyes_aligned).unsqueeze(0),
             focal_length=torch.tensor([[focal_length]]),
             principal_point=torch.tensor([[0.0, 0.0]]),
         )
