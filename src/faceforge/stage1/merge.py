@@ -31,7 +31,7 @@ def merge_params(mica_output: dict, deca_output: dict) -> dict:
     params['shape'] = mica_output['shape_code'][:, :300]  # [1, 300]
 
     # Expression: DECA first 50 dims, pad to 100
-    params['exp'] = torch.zeros(1, 100)
+    params['exp'] = torch.zeros(1, 100, device=deca_output['exp'].device)
     params['exp'][:, :50] = deca_output['exp'][:, :50]  # [1, 100]
 
     # Pose: from DECA

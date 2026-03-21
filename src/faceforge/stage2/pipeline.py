@@ -286,16 +286,16 @@ class Stage2Pipeline:
                 self.config.render_size, self.config.occlusion_depth_eps,
             )
 
-        # Build loss kwargs
+        # Build loss kwargs (all PreprocessedData tensors already on self.device from _preprocess)
         loss_kwargs = dict(
             pred_lmks_68=proj_lmks_68,
             pred_lmks_eyes=proj_lmks_eyes,
-            target_lmks_68=preprocessed.target_lmks_68.to(self.device),
-            target_lmks_eyes=preprocessed.target_lmks_eyes.to(self.device),
+            target_lmks_68=preprocessed.target_lmks_68,
+            target_lmks_eyes=preprocessed.target_lmks_eyes,
             projected_vertices=proj_verts,
             proj_depths=proj_depths,
             visibility_mask=visibility_mask,
-            face_mask=preprocessed.face_mask.to(self.device),  # [1, H, W] = [B, H, W]
+            face_mask=preprocessed.face_mask,
             shape=shared.shape,
             expression=per_img.expression,
             jaw_pose=per_img.jaw_pose,
@@ -304,7 +304,7 @@ class Stage2Pipeline:
 
         if render_out:
             # Construct pixel3dmm-style silhouette masks from segmentation
-            seg = preprocessed.face_segmentation.to(self.device)  # [1, H, W]
+            seg = preprocessed.face_segmentation  # already on device
             # fg_mask: pixel3dmm uses (seg==2)|(seg==6-10)|(seg==12)|(seg==13)
             sil_fg = ((seg == 2) | ((seg >= 6) & (seg <= 10)) |
                       (seg == 12) | (seg == 13)).float()
@@ -321,9 +321,9 @@ class Stage2Pipeline:
                 rendered_image=render_out.get('image'),
                 rendered_normals=render_out.get('normal'),
                 rendered_mask=render_out.get('mask'),
-                target_image=preprocessed.target_image.to(self.device),
-                predicted_normals=preprocessed.pixel3dmm_normals.to(self.device),
-                target_arcface_feat=preprocessed.arcface_feat.to(self.device),
+                target_image=preprocessed.target_image,
+                predicted_normals=preprocessed.pixel3dmm_normals,
+                target_arcface_feat=preprocessed.arcface_feat,
                 cam_rotation=R_head,
                 sil_fg_mask=sil_fg,
                 sil_valid_bg_mask=sil_bg,
@@ -407,15 +407,16 @@ class Stage2Pipeline:
         seg = seg_raw.squeeze(0)
         binary_mask = ((seg > 0) & (seg <= 13)).float()
 
+        d = self.device
         return PreprocessedData(
-            pixel3dmm_uv=uv_map,
-            pixel3dmm_normals=normal_map,
-            face_mask=binary_mask.unsqueeze(0),
-            face_segmentation=face_segmentation,
-            target_image=s1out.aligned_image,
-            target_lmks_68=s1out.lmks_68,
-            target_lmks_eyes=s1out.lmks_eyes,
-            arcface_feat=s1out.arcface_feat,
+            pixel3dmm_uv=uv_map,                              # already on device (from predict)
+            pixel3dmm_normals=normal_map,                     # already on device
+            face_mask=binary_mask.unsqueeze(0).to(d),
+            face_segmentation=face_segmentation.to(d),
+            target_image=s1out.aligned_image.to(d),
+            target_lmks_68=s1out.lmks_68.to(d),
+            target_lmks_eyes=s1out.lmks_eyes.to(d),
+            arcface_feat=s1out.arcface_feat.to(d),
         )
 
     def _init_params(self, s1outs: list[Stage1Output]) -> tuple[SharedParams, list[PerImageParams]]:
