@@ -37,7 +37,7 @@ class DECAInference:
         _OrigFANRun = _det.FAN.run  # preserve original run() as an unbound method
         _device = self.device
         class _PatchedFAN:
-            def __init__(self):
+            def __init__(self, **kwargs):
                 self.model = face_alignment.FaceAlignment(
                     face_alignment.LandmarksType.TWO_D,
                     flip_input=False,
