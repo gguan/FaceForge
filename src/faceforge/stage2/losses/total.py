@@ -9,7 +9,7 @@ import torch.nn as nn
 from ..config import Stage2Config
 from .landmark import landmark_loss, build_landmark_weights, build_landmark_weights_pixel3dmm
 from .regularization import regularization_loss
-from .pixel3dmm_uv import Pixel3DMMUVLoss
+from pixel3dmm.tracking.losses import UVLoss as P3DMMUVLoss
 from .normal import normal_loss
 from .contour import contour_loss
 from .silhouette import silhouette_loss
@@ -37,7 +37,7 @@ class LossAggregator:
         self.mica_init_shape = mica_init_shape.detach().to(self.device)
 
         # UV loss (initialized per-image via setup_uv_loss)
-        self.uv_losses: list[Pixel3DMMUVLoss] = []
+        self.uv_losses: list[P3DMMUVLoss] = []
 
         # Identity loss (skip if w=0)
         self.identity_loss = None
@@ -56,13 +56,17 @@ class LossAggregator:
             self.boundary_indices = flame_model.get_region_indices('face')
 
     def setup_uv_loss(self, flame_model, n_images: int):
-        """Initialize UV loss instances for each image."""
+        """Initialize UV loss instances for each image.
+
+        Uses pixel3dmm's ``UVLoss`` directly — asset paths are resolved
+        via ``pixel3dmm.env_paths`` (configured in ``_pixel3dmm_paths``).
+        """
         self.uv_losses = []
         for _ in range(n_images):
-            uv_loss = Pixel3DMMUVLoss(
-                flame_model.flame_uv_coords,
-                flame_model.uv_valid_verts,
-                self.device,
+            uv_loss = P3DMMUVLoss(
+                stricter_mask=False,
+                delta_uv=self.config.uv_delta_coarse,
+                dist_uv=self.config.uv_dist_coarse,
             )
             self.uv_losses.append(uv_loss)
 
@@ -99,8 +103,7 @@ class LossAggregator:
         if stage != 'coarse_lmk' and c.w_pixel3dmm_uv > 0 and image_idx < len(self.uv_losses):
             losses['uv'] = c.w_pixel3dmm_uv * self.uv_losses[image_idx].compute_loss(
                 kwargs['projected_vertices'],
-                image_size=image_size,
-                visibility_mask=kwargs.get('visibility_mask'),
+                is_visible_verts_idx=kwargs.get('visibility_mask'),
             )
 
         # === Medium+ losses ===
