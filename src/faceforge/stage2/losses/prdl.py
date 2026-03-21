@@ -38,7 +38,7 @@ class PRDLLoss:
     """
 
     def __init__(self, flame_model, grid_size: int = 16, device: torch.device = None):
-        self.device = device or torch.device('cuda:0')
+        self.device = device or torch.device('cpu')
         self.grid_size = grid_size
 
         # Pre-extract FLAME region vertex indices

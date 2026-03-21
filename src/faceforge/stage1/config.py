@@ -1,4 +1,6 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+from faceforge._paths import default_device
 
 
 @dataclass
@@ -26,5 +28,5 @@ class Stage1Config:
     save_mesh: bool = True
     save_summary: bool = True
 
-    # 设备
-    device: str = 'cuda:0'
+    # 设备 (自动选择 cuda → mps → cpu)
+    device: str = field(default_factory=default_device)

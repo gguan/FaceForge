@@ -6,6 +6,7 @@ of the depth at which a module sits in the source tree.
 """
 
 from pathlib import Path
+import torch
 
 
 def _find_project_root(start: Path) -> Path:
@@ -38,3 +39,15 @@ def _find_project_root(start: Path) -> Path:
 
 #: Absolute path to the repository root, resolved once at import time.
 PROJECT_ROOT: Path = _find_project_root(Path(__file__).parent)
+
+
+def default_device() -> str:
+    """Return the best available compute device string.
+
+    Priority: CUDA → MPS (Apple Silicon) → CPU.
+    """
+    if torch.cuda.is_available():
+        return 'cuda:0'
+    if torch.backends.mps.is_available():
+        return 'mps'
+    return 'cpu'

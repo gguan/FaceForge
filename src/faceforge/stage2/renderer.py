@@ -101,7 +101,9 @@ class NvdiffrastRenderer(nn.Module):
             else:
                 self.glctx = dr.RasterizeCudaContext()
             self._available = True
-        except ImportError:
+        except (ImportError, Exception):
+            # ImportError: nvdiffrast not installed (e.g. macOS/CPU-only)
+            # RuntimeError/Exception: nvdiffrast installed but CUDA unavailable
             self._available = False
 
     @property

@@ -1,5 +1,7 @@
 from dataclasses import dataclass, field
 
+from faceforge._paths import default_device
+
 
 @dataclass
 class Stage2Config:
@@ -102,7 +104,7 @@ class Stage2Config:
     # === 输出 ===
     output_dir: str = 'output'
     save_debug: bool = True
-    device: str = 'cuda:0'
+    device: str = field(default_factory=default_device)
 
     def __post_init__(self):
         if self.pixel3dmm_compat:
