@@ -45,9 +45,9 @@ class DECAInference:
 
         from submodules.decalib.deca import DECA
 
-        deca_cfg.model.use_tex = False
+        deca_cfg.model.use_tex = True
         deca_cfg.rasterizer_type = 'pytorch3d'
-        deca_cfg.model.extract_tex = False
+        deca_cfg.model.extract_tex = True
 
         # Resolve model paths
         models_dir = os.path.join(project_root, 'data', 'pretrained')
