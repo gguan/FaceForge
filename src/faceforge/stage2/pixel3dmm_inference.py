@@ -28,22 +28,33 @@ class Pixel3DMMInference:
         if self._uv_model is not None:
             return
 
+        import os
         code_base = str(PROJECT_ROOT / self.config.pixel3dmm_code_base)
         src_path = f'{code_base}/src'
         if src_path not in sys.path:
             sys.path.insert(0, src_path)
 
-        # Patch env_paths to avoid .env dependency
+        # Set env vars BEFORE importing pixel3dmm (env_paths reads them at import time)
+        os.environ.setdefault('PIXEL3DMM_CODE_BASE', code_base)
+        os.environ.setdefault('PIXEL3DMM_PREPROCESSED_DATA', str(PROJECT_ROOT / 'output'))
+        os.environ.setdefault('PIXEL3DMM_TRACKING_OUTPUT', str(PROJECT_ROOT / 'output'))
+
         import pixel3dmm.env_paths as env_paths
         env_paths.CODE_BASE = code_base
 
-        from pixel3dmm.lightning.p3dmm_system import P3DMMSystem
+        from pixel3dmm.lightning.p3dmm_system import system as P3DMMSystem
 
         uv_ckpt = str(PROJECT_ROOT / self.config.pixel3dmm_uv_ckpt)
         normal_ckpt = str(PROJECT_ROOT / self.config.pixel3dmm_normal_ckpt)
 
-        self._uv_model = P3DMMSystem.load_from_checkpoint(uv_ckpt).to(self.device).eval()
-        self._normal_model = P3DMMSystem.load_from_checkpoint(normal_ckpt).to(self.device).eval()
+        # weights_only=False needed for omegaconf-based checkpoints (PyTorch >= 2.6)
+        # strict=False because checkpoints contain extra FLAME/camera keys not in the model
+        self._uv_model = P3DMMSystem.load_from_checkpoint(
+            uv_ckpt, map_location=self.device, weights_only=False, strict=False,
+        ).to(self.device).eval()
+        self._normal_model = P3DMMSystem.load_from_checkpoint(
+            normal_ckpt, map_location=self.device, weights_only=False, strict=False,
+        ).to(self.device).eval()
 
     @torch.no_grad()
     def predict(self, aligned_image: torch.Tensor,
