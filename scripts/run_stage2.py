@@ -5,6 +5,7 @@ Usage:
     python scripts/run_stage2.py --images face1.jpg face2.jpg --device cuda:0 --debug
     python scripts/run_stage2.py --image-dir assets/tom/ --device cuda:0
     python scripts/run_stage2.py --images face.jpg --use-prdl
+    python scripts/run_stage2.py --images face.jpg --pipeline p3m --debug
 """
 
 import argparse
@@ -27,6 +28,9 @@ def main():
     parser.add_argument('--use-prdl', action='store_true', help='Use PRDL instead of baseline')
     parser.add_argument('--output-dir', type=str, default=None)
     parser.add_argument('--config', type=str, default=None, help='Path to config.yaml (default: project root config.yaml)')
+    parser.add_argument('--pipeline', choices=['stage2', 'p3m'], default='stage2',
+                        help='Pipeline to run (default: stage2). '
+                             'p3m = faithful pixel3dmm reimplementation as baseline.')
     args = parser.parse_args()
 
     # Collect image paths
@@ -79,9 +83,8 @@ def main():
         s1_outputs.append(result)
         print(f'  Stage 1 [{i+1}/{len(images_rgb)}]: {name}')
 
-    # Stage 2
+    # Build Stage2Config (shared by both pipelines for asset paths)
     from faceforge.stage2 import Stage2Config
-    from faceforge.stage2.pipeline import Stage2Pipeline
 
     s2_config = Stage2Config(
         **{
@@ -93,32 +96,41 @@ def main():
         }
     )
 
-    # Pass MICA model for identity loss
+    # Pass MICA model for identity loss (stage2 only; p3m doesn't use it)
     mica_model = getattr(s1, 'mica', None)
     mica_inner = getattr(mica_model, 'mica', None) if mica_model else None
 
-    # Create visualizer if debug mode (must be passed to pipeline for per-stage snapshots)
-    visualizer = None
-    if args.debug:
+    # --- Pipeline factory ---
+    output_dir = args.output_dir or 'output'
+    if args.pipeline == 'p3m':
+        from faceforge.stageP3M import P3MPipeline
+        from faceforge.stageP3M.visualization import P3MVisualizer
+        visualizer = P3MVisualizer(output_dir, args.subject) if args.debug else None
+        pipeline_label = 'P3M (pixel3dmm baseline)'
+        print(f'\nRunning {pipeline_label}...')
+        s2 = P3MPipeline.from_stage2_config(s2_config, visualizer=visualizer)
+    else:
+        from faceforge.stage2.pipeline import Stage2Pipeline
         from faceforge.stage2.visualization import Stage2Visualizer
-        visualizer = Stage2Visualizer(args.output_dir, args.subject)
+        visualizer = Stage2Visualizer(output_dir, args.subject) if args.debug else None
+        pipeline_label = 'Stage 2'
+        print(f'\nRunning {pipeline_label}...')
+        s2 = Stage2Pipeline(s2_config, mica_model=mica_inner, visualizer=visualizer)
 
-    print('Running Stage 2...')
-    s2 = Stage2Pipeline(s2_config, mica_model=mica_inner, visualizer=visualizer)
     s2_output = s2.run(s1_outputs)
 
-    print(f'Stage 2 complete!')
-    print(f'  Output shape: {s2_output.shape.shape}')
-    print(f'  Vertices: {s2_output.vertices.shape}')
+    print(f'{pipeline_label} complete!')
+    print(f'  Output shape:        {s2_output.shape.shape}')
+    print(f'  Vertices:            {s2_output.vertices.shape}')
     print(f'  Loss history stages: {list(s2_output.loss_history.keys())}')
 
-    # Save final debug artifacts
+    # Save final debug artifacts (same interface for both pipelines)
     if args.debug and visualizer is not None:
         visualizer.save_loss_curves(s2_output.loss_history)
         visualizer.save_mesh_obj(s2_output.vertices, s2.flame.faces, 'mesh_optimized.obj')
         visualizer.save_result(s2_output)
-        print(f'  Debug output: {args.output_dir}/{args.subject}/stage2/')
-        print(f'  Stage progression: {args.output_dir}/{args.subject}/stage2/02_optimization/stage_progression.png')
+        subdir = 'stageP3M' if args.pipeline == 'p3m' else 'stage2'
+        print(f'  Debug output:      {output_dir}/{args.subject}/{subdir}/')
 
 
 if __name__ == '__main__':
