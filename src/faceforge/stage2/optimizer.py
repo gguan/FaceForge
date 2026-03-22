@@ -14,14 +14,16 @@ from .data_types import SharedParams, PerImageParams
 
 # Which parameters are optimized at each stage
 STAGE_PARAMS = {
+    # pixel3dmm optimize_camera(): 只优化相机/姿态参数，冻结 shape/expression/jaw
+    # Ref: tracker.py L608-614 (params only include t, R, focal_length, principal_point)
     'coarse_lmk': {
         'shared': [],
-        'per_image': ['head_pose', 'jaw_pose', 'translation'],
+        'per_image': ['head_pose', 'translation'],
         'shared_if_single': ['focal_length'],
     },
     'coarse_uv': {
         'shared': [],
-        'per_image': ['head_pose', 'jaw_pose', 'translation'],
+        'per_image': ['head_pose', 'translation'],
         'shared_if_single': ['focal_length'],
     },
     'medium': {

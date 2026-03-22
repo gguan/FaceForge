@@ -89,8 +89,11 @@ class LossAggregator:
 
         use_l2 = stage in ('coarse_lmk', 'coarse_uv')
 
-        # === Landmark (all stages) ===
-        if c.w_landmark > 0:
+        # === Landmark (coarse_lmk + medium+，coarse_uv 关闭) ===
+        # pixel3dmm optimize_camera(): 前半段(coarse_lmk) landmark only，
+        # 后半段(coarse_uv) 关闭 landmark，切换为纯 UV loss。
+        # Ref: tracker.py L648-654
+        if c.w_landmark > 0 and stage != 'coarse_uv':
             losses['landmark'] = c.w_landmark * landmark_loss(
                 kwargs['pred_lmks_68'], kwargs['pred_lmks_eyes'],
                 kwargs['target_lmks_68'], kwargs['target_lmks_eyes'],
