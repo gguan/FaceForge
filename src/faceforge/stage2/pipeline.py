@@ -137,7 +137,7 @@ class Stage2Pipeline:
             self._run_sequential_stage(shared, per_image, preprocessed, loss_agg, i)
         shared.shape.requires_grad_(True)
 
-        # Phase 2: Global joint optimization
+        # Phase 2: Global joint optimization (pixel3dmm: global_iters=5000)
         batch_size = min(N, self.config.multi_image_batch_size)
 
         def sample_fn():
@@ -146,6 +146,7 @@ class Stage2Pipeline:
         loss_history = self._run_optimization(
             shared, per_image, preprocessed, loss_agg,
             selected_fn=sample_fn, lr_scale=self.config.global_lr_scale,
+            steps_override={'medium': self.config.global_iters},
         )
 
         return self._build_output(shared, per_image, loss_history)
@@ -176,8 +177,14 @@ class Stage2Pipeline:
     # ------------------------------------------------------------------
 
     def _run_optimization(self, shared, per_image, preprocessed, loss_agg,
-                          selected_fn, lr_scale) -> dict:
-        """Run 5-stage optimization loop."""
+                          selected_fn, lr_scale,
+                          steps_override: dict | None = None) -> dict:
+        """Run 5-stage optimization loop.
+
+        Args:
+            steps_override: optional dict mapping stage name → step count,
+                            e.g. {'medium': 5000} for joint phase.
+        """
         all_loss_history = {}
 
         stages = list(STAGE_ORDER)
@@ -185,7 +192,8 @@ class Stage2Pipeline:
             stages.remove('fine_detail')
 
         for stage in stages:
-            total_steps = self.opt_manager.get_steps(stage)
+            total_steps = (steps_override or {}).get(
+                stage, self.opt_manager.get_steps(stage))
             if total_steps <= 0:
                 continue  # skip stages with 0 steps (e.g. pixel3dmm_compat mode)
             stage_history = []

@@ -109,9 +109,11 @@ class Stage2Config:
     early_stopping_delta: float = 1e-5
 
     # === 多图优化 ===
+    # pixel3dmm: per-frame iters=500, joint global_iters=5000
     multi_image_batch_size: int = 4
     sequential_coarse_steps: int = 100
     sequential_medium_steps: int = 200
+    global_iters: int = 5000         # joint 阶段总步数 (= pixel3dmm config.global_iters)
     global_lr_scale: float = 0.1
 
     # === pixel3dmm 兼容模式 ===
