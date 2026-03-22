@@ -33,12 +33,14 @@ class Stage2Config:
     render_size: int = 512
     use_opengl: bool = False
 
-    # === 5 阶段步数 (ref: pixel3dmm tracker.py config.iters=500) ===
-    # pixel3dmm 用单循环 iters 步，内部在 50%/75%/90% 切换阶段。
-    # 对应映射：coarse_lmk(0→20%) + coarse_uv(20→50%) + medium(50→100%)
-    coarse_lmk_steps: int = 100
-    coarse_uv_steps: int = 150
-    medium_steps: int = 250
+    # === 5 阶段步数 ===
+    # pixel3dmm 用单一循环（config.iters=500），所有 loss 从第 0 步全开，
+    # 无 coarse_lmk / coarse_uv 分段。只有 LR 在 50%/75%/90% 处衰减。
+    # 我们保留分段结构方便 debug，但 medium（= pixel3dmm 主循环）设为 500。
+    # coarse_lmk / coarse_uv 是我们自己加的预热阶段，pixel3dmm 中不存在。
+    coarse_lmk_steps: int = 0    # pixel3dmm 无此阶段，设 0 跳过
+    coarse_uv_steps: int = 0     # pixel3dmm 无此阶段，设 0 跳过
+    medium_steps: int = 500      # 对应 pixel3dmm config.iters = 500
     fine_pca_steps: int = 0
     fine_detail_steps: int = 0
     enable_fine_detail: bool = False
