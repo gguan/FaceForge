@@ -240,9 +240,10 @@ class Stage2Pipeline:
 
             all_loss_history[stage] = stage_history
 
-            # --- Visualization: snapshot at end of each stage ---
+            # --- Visualization: snapshot at end of each stage (all images) ---
             if self.visualizer is not None:
-                self._snapshot_stage(stage, shared, per_image, preprocessed, selected)
+                for vis_idx in range(len(per_image)):
+                    self._snapshot_stage(stage, shared, per_image, preprocessed, vis_idx)
 
         # Final progression image
         if self.visualizer is not None:
@@ -342,12 +343,8 @@ class Stage2Pipeline:
     def _snapshot_stage(self, stage: str, shared: SharedParams,
                         per_image: list[PerImageParams],
                         preprocessed: list[PreprocessedData],
-                        selected: list[int]):
-        """Take a visualization snapshot at the end of a stage.
-
-        Uses the first selected image for the snapshot panels.
-        """
-        idx = selected[0]
+                        idx: int):
+        """Take a visualization snapshot at the end of a stage for one image."""
         pip = per_image[idx]
         prep = preprocessed[idx]
 

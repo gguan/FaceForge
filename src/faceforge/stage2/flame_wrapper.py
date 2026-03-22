@@ -130,18 +130,42 @@ class FLAMEWrapper(nn.Module):
             landmarks_68:   [B, 68, 3]
             landmarks_eyes: [B, 10, 3]
         """
+        from pixel3dmm.utils.utils_3d import matrix_to_rotation_6d
+
         # Convert axis-angle → 6D rotation (pixel3dmm FLAME expects 6D)
         rot_6d = _aa_to_6d(head_pose)    # [B, 6]
         jaw_6d = _aa_to_6d(jaw_pose)     # [B, 6]
+
+        # ── Contour landmark selection fix ────────────────────────────────
+        # pixel3dmm calls FLAME with cameras=inv(R_base) and
+        # rot_params_lmk_shift=inv(_R) so that the jaw-contour selection
+        # picks the correct visible side for the current camera view.
+        #
+        # Our setup: camera is frontal (R_base = I), head rotation is applied
+        # inside FLAME via rot_params.  For a frontal camera the correct
+        # contour-selection rotation is:
+        #   cameras     = I   (no camera tilt)
+        #   rot_lmk_shift = inv(head_pose)  → rel_rot = I @ inv(R_head)
+        #
+        # Without this fix: rel_rot = R_head → selects the WRONG side of the
+        # jaw contour for any non-frontal head pose (bug: index 39+θ vs θ).
+        # Ref: pixel3dmm tracker.py L853-854
+        B = head_pose.shape[0]
+        R_head = _batch_rodrigues(head_pose)                    # [B, 3, 3]
+        R_head_inv = R_head.transpose(-1, -2)                   # [B, 3, 3]
+        rot_lmk_shift_6d = matrix_to_rotation_6d(R_head_inv)   # [B, 6]
+        cameras_I = torch.eye(3, device=head_pose.device,
+                              dtype=head_pose.dtype).unsqueeze(0).expand(B, -1, -1)
 
         # pixel3dmm FLAME returns:
         #   vertices, lmk68, joint_transforms, v_can, vertices_noneck
         vertices, lmk68, _jt, _vcan, _vnoneck = self._flame(
             shape_params=shape_params,
-            cameras=None,          # no multi-view landmark correction
+            cameras=cameras_I,
             rot_params=rot_6d,
             jaw_pose_params=jaw_6d,
             expression_params=expression_params,
+            rot_params_lmk_shift=rot_lmk_shift_6d,
         )
 
         landmarks_eyes = vertices[:, R_EYE_INDICES + L_EYE_INDICES, :]

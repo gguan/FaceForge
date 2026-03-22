@@ -110,6 +110,11 @@ class Stage2Config:
     sequential_medium_steps: int = 200
     global_lr_scale: float = 0.1
 
+    # === pixel3dmm 兼容模式 ===
+    # True: 仅使用眼部关键点权重（与 pixel3dmm tracker 完全一致）
+    # False: 使用完整 68 点权重（鼻子额外加权）
+    pixel3dmm_compat: bool = False
+
     # === 输出 ===
     output_dir: str = 'output'
     save_debug: bool = True

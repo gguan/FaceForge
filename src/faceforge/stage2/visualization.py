@@ -58,7 +58,7 @@ class Stage2Visualizer:
             d.mkdir(parents=True, exist_ok=True)
 
         # Accumulate per-stage snapshot panels for final progression image
-        self._stage_snapshots: dict[str, np.ndarray] = {}
+        self._stage_snapshots: dict[tuple[str, int], np.ndarray] = {}
 
     # ------------------------------------------------------------------
     # Preprocessing
@@ -175,42 +175,57 @@ class Stage2Visualizer:
             cv2.cvtColor(snapshot, cv2.COLOR_RGB2BGR),
         )
 
-        # Store for progression image
-        self._stage_snapshots[stage] = snapshot
+        # Store for progression image: key = (stage, image_idx)
+        self._stage_snapshots[(stage, image_idx)] = snapshot
         return snapshot
 
-    def save_stage_progression(self) -> Optional[np.ndarray]:
-        """Combine all saved stage snapshots into a single wide progression image.
+    def save_stage_progression(self) -> None:
+        """Save per-image progression strips.
 
-        Layout (vertical stack):
-            coarse_lmk:   [lmk | mesh | blend]
-            coarse_uv:    [lmk | mesh | blend]
-            medium:       [lmk | mesh | blend]
-            fine_pca:     [lmk | mesh | blend]
-            fine_detail:  [lmk | mesh | blend]
+        For each image, stacks all stage snapshots vertically:
+            coarse_lmk:  [lmk | mesh | blend]
+            coarse_uv:   [lmk | mesh | blend]
+            medium:      [lmk | mesh | blend]
+            ...
 
-        Returns:
-            progression: RGB uint8 or None if no snapshots
+        Output files: stage_progression_img{idx}.png  (one per input image)
+        Also saves: stage_progression.png  (first image, for backwards compat)
         """
         if not self._stage_snapshots:
-            return None
+            return
 
-        # Stack vertically in stage order
-        ordered = []
-        for stage in ['coarse_lmk', 'coarse_uv', 'medium', 'fine_pca', 'fine_detail']:
-            if stage in self._stage_snapshots:
-                ordered.append(self._stage_snapshots[stage])
+        # Collect unique image indices
+        image_indices = sorted({idx for (_, idx) in self._stage_snapshots.keys()})
+        stage_order = ['coarse_lmk', 'coarse_uv', 'medium', 'fine_pca', 'fine_detail']
 
-        if not ordered:
-            return None
+        for img_idx in image_indices:
+            rows = []
+            for stage in stage_order:
+                snap = self._stage_snapshots.get((stage, img_idx))
+                if snap is not None:
+                    rows.append(snap)
+            if not rows:
+                continue
 
-        progression = np.concatenate(ordered, axis=0)
+            progression = np.concatenate(rows, axis=0)
+            fname = f'stage_progression_img{img_idx}.png'
+            cv2.imwrite(
+                str(self.optim_dir / fname),
+                cv2.cvtColor(progression, cv2.COLOR_RGB2BGR),
+            )
 
-        cv2.imwrite(
-            str(self.optim_dir / 'stage_progression.png'),
-            cv2.cvtColor(progression, cv2.COLOR_RGB2BGR),
-        )
-        return progression
+        # Also save first image as stage_progression.png (backwards compat)
+        first_idx = image_indices[0]
+        rows = []
+        for stage in stage_order:
+            snap = self._stage_snapshots.get((stage, first_idx))
+            if snap is not None:
+                rows.append(snap)
+        if rows:
+            cv2.imwrite(
+                str(self.optim_dir / 'stage_progression.png'),
+                cv2.cvtColor(np.concatenate(rows, axis=0), cv2.COLOR_RGB2BGR),
+            )
 
     # ------------------------------------------------------------------
     # Progress during optimization (every N steps)
