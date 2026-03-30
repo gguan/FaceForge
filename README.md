@@ -81,6 +81,42 @@ pip install open3d
 pip install -e .
 ```
 
+### Verified Windows CPU setup
+
+The generic instructions above are cross-platform. On Windows + CPU, the following environment was verified end-to-end on **March 20, 2026** by running `pytest tests/ -v` successfully:
+
+```powershell
+# 1. Create and activate a clean environment
+conda create -n faceforge-p3d python=3.10 -y
+conda activate faceforge-p3d
+
+# 2. Install a PyTorch version in the PyTorch3D support window
+conda install pytorch=2.4.1 torchvision cpuonly -c pytorch -y
+
+# 3. PyTorch3D prerequisites
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install iopath Cython==3.0.12
+
+# 4. Install PyTorch3D from source
+#    --no-build-isolation is required so the build can see torch
+python -m pip install --no-build-isolation "git+https://github.com/facebookresearch/pytorch3d.git@stable"
+
+# 5. Install the runtime dependencies that were verified with the tests
+python -m pip install numpy==1.26.4
+python -m pip install opencv-python==4.11.0.86 opencv-contrib-python==4.11.0.86 opencv-python-headless==4.11.0.86
+python -m pip install mediapipe onnxruntime yacs loguru trimesh kornia face-alignment pytest==7.4.4 anyio==4.2.0
+python -m pip install --no-build-isolation chumpy insightface
+
+# 6. Install FaceForge
+python -m pip install -e .
+```
+
+Notes:
+
+- `pip install pytorch3d` did **not** resolve a wheel automatically on this Windows machine; the `git+...@stable` install above was the working path.
+- `chumpy` and `insightface` were also installed with `--no-build-isolation` because their legacy build steps failed under isolated builds.
+- The verified environment used Python 3.10, PyTorch 2.4.1, PyTorch3D 0.7.8, NumPy 1.26.4, and OpenCV 4.11.0.86.
+
 ---
 
 ## Model weights
@@ -90,7 +126,7 @@ Download the following files into `data/pretrained/` before running:
 | File | Source |
 |------|--------|
 | `mica.tar` | [MICA releases](https://github.com/Zielon/MICA/releases) |
-| `deca_model.tar` + texture data | [DECA data.zip](https://github.com/yfeng95/DECA) |
+| `deca_model.tar` + texture data | [DECA repository](https://github.com/yfeng95/DECA) |
 | `79999_iter.pth` | [face-parsing.PyTorch](https://github.com/zllrunning/face-parsing.PyTorch) |
 | `FLAME2020/generic_model.pkl` | [FLAME website](https://flame.is.tue.mpg.de/) (registration required) |
 | `FLAME2020/head_template.obj` | included in DECA data.zip |
@@ -104,6 +140,8 @@ Download the following files into `data/pretrained/` before running:
 | `mediapipe/face_landmarker.task` | [MediaPipe models](https://developers.google.com/mediapipe/solutions/vision/face_landmarker#models) |
 
 InsightFace's **antelopev2** model is downloaded automatically on first run into `~/.insightface/`.
+
+If `DECA data.zip` is unavailable or outdated, the missing texture/mask files can be downloaded directly from the official [`data/`](https://github.com/yfeng95/DECA/tree/master/data) directory in the DECA repository.
 
 Expected directory layout after downloading:
 

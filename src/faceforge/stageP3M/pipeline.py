@@ -156,6 +156,26 @@ class P3MPipeline:
         from faceforge.stage2._pixel3dmm_paths import configure_pixel3dmm_paths
         configure_pixel3dmm_paths(self.config)
 
+        # pixel3dmm FLAME (canonical mode - no internal rotation)
+        from pixel3dmm.tracking.flame.FLAME import FLAME as P3DFLAME
+        from pixel3dmm.utils.utils_3d import matrix_to_rotation_6d
+        self.flame = P3DFLAME(_P3DMMConfig()).to(self.device)
+
+        # Fixed eye/neck/eyelid parameters (not optimized)
+        i6d = matrix_to_rotation_6d(torch.eye(3, device=self.device).unsqueeze(0))
+        self._eyes_fixed = i6d.repeat(1, 2)
+        self._neck_fixed = i6d
+        self._eyelids_fixed = torch.zeros(1, 2, device=self.device)
+
+        # Renderer
+        self.renderer = NvdiffrastRenderer(
+            image_size=self.config.render_size,
+            use_opengl=self.config.use_opengl,
+        )
+
+        # pixel3dmm inference (UV + normals)
+        self._pixel3dmm = None
+
     @classmethod
     def from_stage2_config(cls, s2_config, visualizer=None) -> 'P3MPipeline':
         """Create P3MPipeline from a Stage2Config, copying shared asset paths.
@@ -330,6 +350,7 @@ class P3MPipeline:
                 delta_uv_fine=self.config.delta_uv_fine,
                 dist_uv_fine=self.config.dist_uv_fine,
             )
+            self._prime_joint_uv_loss(uv_fn)
 
         # Phase 2: Joint global optimization
         # Ref: tracker.py L1735: optimize_color(is_joint=True) with iters=global_iters
@@ -347,6 +368,21 @@ class P3MPipeline:
             self.visualizer.save_stage_progression()
 
         return self._build_output(shape, pips, all_loss_history)
+
+    @staticmethod
+    def _prime_joint_uv_loss(uv_loss_fn) -> None:
+        """Reuse cached single-frame UV correspondences for joint optimization.
+
+        In this pipeline each ``UVLoss`` instance belongs to exactly one image.
+        After ``finish_stage1()``, pixel3dmm stores that image's cached
+        correspondences in ``verts_2d`` and resets ``gt_2_verts`` via
+        ``is_next()``. Joint mode should reuse the cached tensor instead of
+        calling ``compute_corresp()`` again, which would try to append to a
+        tensor-backed cache.
+        """
+        cached = getattr(uv_loss_fn, 'verts_2d', None)
+        if uv_loss_fn.gt_2_verts is None and isinstance(cached, torch.Tensor):
+            uv_loss_fn.gt_2_verts = cached[:1]
 
     # ------------------------------------------------------------------
     # optimize_camera

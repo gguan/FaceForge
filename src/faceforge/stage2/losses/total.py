@@ -3,13 +3,16 @@
 Coordinates all loss functions and handles stage-dependent activation.
 """
 
+import os
+import sys
+
 import torch
 import torch.nn as nn
 
+from faceforge._paths import PROJECT_ROOT
 from ..config import Stage2Config
 from .landmark import landmark_loss, build_landmark_weights, build_landmark_weights_pixel3dmm
 from .regularization import regularization_loss
-from pixel3dmm.tracking.losses import UVLoss as P3DMMUVLoss
 from .normal import normal_loss
 from .contour import contour_loss
 from .silhouette import silhouette_loss
@@ -28,7 +31,7 @@ class LossAggregator:
         self.device = torch.device(config.device)
 
         # Landmark weights: pixel3dmm-compat uses eye-only weights
-        if config.pixel3dmm_compat:
+        if getattr(config, 'pixel3dmm_compat', False):
             self.lmk_weights = build_landmark_weights_pixel3dmm(self.device)
         else:
             self.lmk_weights = build_landmark_weights(self.device, config.nose_landmark_weight)
@@ -37,7 +40,7 @@ class LossAggregator:
         self.mica_init_shape = mica_init_shape.detach().to(self.device)
 
         # UV loss (initialized per-image via setup_uv_loss)
-        self.uv_losses: list[P3DMMUVLoss] = []
+        self.uv_losses = []
 
         # Identity loss (skip if w=0)
         self.identity_loss = None
@@ -61,6 +64,17 @@ class LossAggregator:
         Uses pixel3dmm's ``UVLoss`` directly — asset paths are resolved
         via ``pixel3dmm.env_paths`` (configured in ``_pixel3dmm_paths``).
         """
+        code_base = str(PROJECT_ROOT / self.config.pixel3dmm_code_base)
+        src_path = f'{code_base}/src'
+        if src_path not in sys.path:
+            sys.path.insert(0, src_path)
+
+        os.environ.setdefault('PIXEL3DMM_CODE_BASE', code_base)
+        os.environ.setdefault('PIXEL3DMM_PREPROCESSED_DATA', str(PROJECT_ROOT / 'output'))
+        os.environ.setdefault('PIXEL3DMM_TRACKING_OUTPUT', str(PROJECT_ROOT / 'output'))
+
+        from pixel3dmm.tracking.losses import UVLoss as P3DMMUVLoss
+
         self.uv_losses = []
         for _ in range(n_images):
             uv_loss = P3DMMUVLoss(

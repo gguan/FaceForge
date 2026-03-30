@@ -27,7 +27,7 @@ def _load_yaml(config_path: Path | None) -> dict[str, Any]:
     path = Path(config_path) if config_path else _DEFAULT_CONFIG
     if not path.exists():
         return {}
-    with open(path) as f:
+    with open(path, encoding='utf-8-sig') as f:
         return yaml.safe_load(f) or {}
 
 
