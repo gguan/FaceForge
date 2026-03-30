@@ -449,7 +449,9 @@ class Stage2Pipeline:
         # Formula: z_init = fx * face_width_m / target_face_px
         #        = (focal_norm * render_size) * 0.2 / (0.5 * render_size)
         #        = focal_norm * 0.4
-        z_init = float(s1outs[0].focal_length) * 0.4
+        # Negative because the renderer uses OpenGL convention (camera looks in -z;
+        # visible objects must have z_cam < 0 so that clip_w = -z_cam > 0).
+        z_init = -float(s1outs[0].focal_length) * 0.4
         per_image = []
         for s1out in s1outs:
             t_init = torch.tensor([[0.0, 0.0, z_init]], device=self.device)

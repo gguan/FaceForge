@@ -181,6 +181,10 @@ class NvdiffrastRenderer(nn.Module):
         normals_interp = normals_interp.flip(1)
         depth = depth.flip(1)
 
+        # 10. Tone-map to [0, 1] — SH shading with large ambient coefficients
+        #     (e.g. DECA outputs ~3.7) can produce values > 1.0; clamp for display.
+        image = image.clamp(0.0, 1.0)
+
         return {
             'image': image,           # [B, H, W, 3]
             'mask': mask,             # [B, H, W, 1]

@@ -73,6 +73,8 @@ def project_points(points_3d: torch.Tensor, K: torch.Tensor,
                    RT: torch.Tensor, image_size: int = 512) -> torch.Tensor:
     """Project 3D points to 2D pixel coordinates (image y-down convention).
 
+    OpenGL camera convention: camera looks in -z; objects in front of the camera
+    have z_cam < 0.  Projection formula: u = fx*(x/-z) + cx, v_yup = fy*(y/-z) + cy.
     Ref: pixel3dmm tracker.py project_points_screen_space
 
     Args:
@@ -83,7 +85,7 @@ def project_points(points_3d: torch.Tensor, K: torch.Tensor,
 
     Returns:
         points_2d: [B, N, 2] pixel coordinates (x right, y down)
-        depths: [B, N] z-depth in camera space
+        depths: [B, N] z-depth in camera space (negative for visible points)
     """
     R = RT[:, :3, :3]  # [B, 3, 3]
     t = RT[:, :3, 3:]  # [B, 3, 1]
@@ -91,20 +93,31 @@ def project_points(points_3d: torch.Tensor, K: torch.Tensor,
     # World → Camera
     points_cam = torch.bmm(R, points_3d.transpose(1, 2)) + t  # [B, 3, N]
 
-    # Camera → Image (standard pinhole: u = fx*x/z + cx, v = fy*y/z + cy)
-    points_proj = torch.bmm(K, points_cam)  # [B, 3, N]
+    z_cam = points_cam[:, 2, :]  # [B, N], negative for visible points (OpenGL)
 
-    # Perspective divide
-    depths = points_proj[:, 2, :]  # [B, N]
-    points_2d = points_proj[:, :2, :] / (depths.unsqueeze(1) + 1e-8)  # [B, 2, N]
+    # OpenGL projection: divide by -z (positive for visible points).
+    # Applying K to [x, y, -z] and dividing by -z yields:
+    #   u = fx * x / (-z) + cx
+    #   v_yup = fy * y / (-z) + cy
+    # This matches pixel3dmm's project_points_screen_space (divide-by-minus-z branch).
+    points_cam_negz = points_cam.clone()
+    points_cam_negz[:, 2, :] = -z_cam  # flip z so the denominator is positive
 
-    # FLAME uses y-up; image coordinates are y-down.
-    # Flip y: v_image = (image_size - 1) - v_pinhole
-    # This matches the flip(1) applied to nvdiffrast output in renderer.py.
+    # Camera → Image
+    points_proj = torch.bmm(K, points_cam_negz)  # [B, 3, N]
+
+    # Perspective divide (denominator is -z_cam > 0 for visible points)
+    pos_depth = points_proj[:, 2, :]  # = -z_cam
+    points_2d = points_proj[:, :2, :] / (pos_depth.unsqueeze(1) + 1e-8)  # [B, 2, N]
+
+    # y-flip: OpenGL camera y-up → image y-down.
+    # Matches the flip(1) applied to nvdiffrast output in renderer.py.
     points_2d = points_2d.clone()
     points_2d[:, 1, :] = (image_size - 1) - points_2d[:, 1, :]
 
-    return points_2d.transpose(1, 2), depths  # [B, N, 2], [B, N]
+    # Return raw z_cam (negative) as depths — used by compute_visibility_mask which
+    # samples the depth buffer (also negative z_cam) and checks sampled < vertex + eps.
+    return points_2d.transpose(1, 2), z_cam  # [B, N, 2], [B, N]
 
 
 def _build_projection_matrix(K: torch.Tensor, image_size: int,
