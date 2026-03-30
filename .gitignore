@@ -32,8 +32,9 @@ MANIFEST
 # Model weights & large binary assets
 # (download separately — see docs/setup.md)
 # ──────────────────────────────────────────────
-data/pretrained/
+data/
 *.pth
+*.ckpt
 *.tar
 *.pkl
 *.npz
@@ -114,7 +115,11 @@ Thumbs.db
 ehthumbs.db
 
 # ──────────────────────────────────────────────
-# Symlinks created at runtime
-# (MICA creates submodules/MICA/data/FLAME2020/generic_model.pkl)
+# External submodules (vendored, not git submodules)
 # ──────────────────────────────────────────────
-submodules/MICA/data/
+submodules/
+
+# ──────────────────────────────────────────────
+# Claude Code
+# ──────────────────────────────────────────────
+.claude/
