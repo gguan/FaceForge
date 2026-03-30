@@ -8,19 +8,35 @@ import os
 import cv2
 import numpy as np
 import torch
-from pytorch3d.renderer import (
-    BlendParams,
-    FoVPerspectiveCameras,
-    MeshRasterizer,
-    MeshRenderer,
-    OrthographicCameras,
-    PointLights,
-    RasterizationSettings,
-    SoftPhongShader,
-    TexturesVertex,
-    look_at_view_transform,
-)
-from pytorch3d.structures import Meshes
+
+try:
+    from pytorch3d.renderer import (
+        BlendParams,
+        FoVPerspectiveCameras,
+        MeshRasterizer,
+        MeshRenderer,
+        OrthographicCameras,
+        PointLights,
+        RasterizationSettings,
+        SoftPhongShader,
+        TexturesVertex,
+        look_at_view_transform,
+    )
+    from pytorch3d.structures import Meshes
+    _PYTORCH3D_AVAILABLE = True
+except ImportError:
+    BlendParams = None
+    FoVPerspectiveCameras = None
+    MeshRasterizer = None
+    MeshRenderer = None
+    OrthographicCameras = None
+    PointLights = None
+    RasterizationSettings = None
+    SoftPhongShader = None
+    TexturesVertex = None
+    look_at_view_transform = None
+    Meshes = None
+    _PYTORCH3D_AVAILABLE = False
 
 
 # Color palette for 19-class face parsing visualization
@@ -57,6 +73,8 @@ DECA_LIGHT_DIRS = [
 ]
 DECA_LIGHT_INTENSITY = 1.7
 DECA_MESH_COLOR = 180.0 / 255.0  # gray (0.706)
+MESH_EDGE_WIDTH = 1
+MESH_EDGE_DARKEN = 0.65
 
 
 class Stage1Visualizer:
@@ -390,12 +408,16 @@ class Stage1Visualizer:
                 pts_2d = _project_vertices_similarity(
                     vertices, flame_lmks_3d, lmks_68,
                 )
-            if pts_2d is not None:
+            if pts_2d is not None and _PYTORCH3D_AVAILABLE:
                 mesh_vis = _render_mesh_aligned(
                     vertices, faces, pts_2d, img_size, device,
                 )
-            else:
+            elif pts_2d is not None:
+                mesh_vis = _render_mesh_fallback(aligned_image, pts_2d, faces)
+            elif _PYTORCH3D_AVAILABLE:
                 mesh_vis = _render_mesh_front_view(vertices, faces, device)
+            else:
+                mesh_vis = np.zeros_like(aligned_image)
             panels.append(_resize(mesh_vis))
         else:
             panels.append(np.zeros((size, size, 3), dtype=np.uint8))
@@ -432,6 +454,7 @@ def _render_mesh_aligned(
     Returns:
         rendered_img [image_size, image_size, 3] uint8 RGB
     """
+    _require_pytorch3d()
     verts_t = torch.from_numpy(vertices).float().to(device)
     faces_world_t = torch.from_numpy(faces).long().to(device)
     # x-flip + y-flip = even number of flips → handedness preserved, no winding change
@@ -502,6 +525,17 @@ def _render_mesh_aligned(
     image = renderer(mesh)
     image = (image[0, ..., :3].cpu().numpy().clip(0, 1) * 255).astype(np.uint8)
     return image
+
+
+def _render_mesh_fallback(
+    base_image: np.ndarray,
+    pts_2d: np.ndarray,
+    faces: np.ndarray,
+) -> np.ndarray:
+    """Draw a lightweight wireframe overlay when PyTorch3D is unavailable."""
+    wireframe = base_image.copy()
+    _draw_wireframe(wireframe, pts_2d, faces, color=(255, 255, 0), thickness=1)
+    return wireframe
 
 
 def save_summary_grid(
@@ -743,6 +777,7 @@ def _render_mesh_front_view(
         rendered_img [H, W, 3] uint8 RGB
     """
     # Convert meters → mm for camera distance calculation
+    _require_pytorch3d()
     verts_mm = vertices * 1000.0
     verts_t = torch.from_numpy(verts_mm).float().to(device)
     faces_t = torch.from_numpy(faces).long().to(device)
@@ -984,3 +1019,11 @@ def _save_obj(filepath: str, vertices: np.ndarray, faces: np.ndarray):
         for face in faces:
             # OBJ uses 1-based indexing
             f.write(f'f {face[0]+1} {face[1]+1} {face[2]+1}\n')
+
+
+def _require_pytorch3d() -> None:
+    if not _PYTORCH3D_AVAILABLE:
+        raise RuntimeError(
+            "PyTorch3D is required for mesh rendering. Install the optional render "
+            "dependencies or disable debug mesh rendering."
+        )
