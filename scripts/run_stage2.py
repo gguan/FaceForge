@@ -79,9 +79,16 @@ def main():
     s1_outputs = []
     for i, img in enumerate(images_rgb):
         name = image_paths[i].stem if i < len(image_paths) else f'img_{i}'
-        result, _ = s1.run_single(img, args.subject, image_name=name)
-        s1_outputs.append(result)
-        print(f'  Stage 1 [{i+1}/{len(images_rgb)}]: {name}')
+        try:
+            result, _ = s1.run_single(img, args.subject, image_name=name)
+            s1_outputs.append(result)
+            print(f'  Stage 1 [{i+1}/{len(images_rgb)}]: {name}')
+        except ValueError as e:
+            print(f'  [WARN] Skipping {i+1:03d} ({name}): {e}')
+
+    if not s1_outputs:
+        print('No images processed successfully in Stage 1. Exiting.')
+        sys.exit(1)
 
     # Build Stage2Config (shared by both pipelines for asset paths)
     from faceforge.stage2 import Stage2Config
