@@ -51,10 +51,12 @@ data/
 # Generated outputs
 # ──────────────────────────────────────────────
 output/
+outputs/
 runs/
 logs/
 *.log
 wandb/
+tmp/
 
 # ──────────────────────────────────────────────
 # Virtual environments
@@ -118,6 +120,11 @@ ehthumbs.db
 # External submodules (vendored, not git submodules)
 # ──────────────────────────────────────────────
 submodules/
+
+# ──────────────────────────────────────────────
+# Draft / scratch docs
+# ──────────────────────────────────────────────
+docs/superpowers/
 
 # ──────────────────────────────────────────────
 # Claude Code
