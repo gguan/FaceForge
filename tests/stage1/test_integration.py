@@ -225,7 +225,8 @@ class TestFullPipeline:
 
     @pytest.fixture(scope='class')
     def output(self, pipeline, test_image_rgb):
-        return pipeline.run_single(test_image_rgb, subject_name='pytest')
+        result, _ = pipeline.run_single(test_image_rgb, subject_name='pytest')
+        return result
 
     # ── tensor shapes ────────────────────────────────────────────────────────
 
@@ -304,11 +305,11 @@ class TestMultiImagePipeline:
         return Stage1Pipeline(stage1_config)
 
     def test_multi_same_as_single_for_one_image(self, pipeline, test_image_rgb):
-        single = pipeline.run_single(test_image_rgb, subject_name='single')
-        multi = pipeline.run_multi([test_image_rgb], subject_name='multi1')
+        single, _ = pipeline.run_single(test_image_rgb, subject_name='single')
+        multi, _ = pipeline.run_multi([test_image_rgb], subject_name='multi1')
         assert torch.allclose(single.shape, multi.shape), \
             'run_multi with 1 image should equal run_single'
 
     def test_multi_two_images_shape_aggregated(self, pipeline, test_image_rgb):
-        result = pipeline.run_multi([test_image_rgb, test_image_rgb], subject_name='multi2')
+        result, _ = pipeline.run_multi([test_image_rgb, test_image_rgb], subject_name='multi2')
         assert result.shape.shape == (1, 300), 'aggregated shape must be [1, 300]'
