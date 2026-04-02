@@ -293,6 +293,97 @@ class Stage2Visualizer:
         plt.close(fig)
 
     # ------------------------------------------------------------------
+    # pixel3dmm-style per-image preview: [original | normal blend | rendered normal]
+    # ------------------------------------------------------------------
+
+    @torch.no_grad()
+    def save_p3m_preview(self, image_idx: int,
+                         target_image: torch.Tensor,
+                         rendered_normals: torch.Tensor,
+                         rendered_mask: torch.Tensor,
+                         cam_rotation: torch.Tensor,
+                         predicted_normals: torch.Tensor | None = None):
+        """Save pixel3dmm-style 3-panel preview for one image.
+
+        Panels:
+            1. Original image
+            2. Normal blend: 30% image + 70% canonical-space normals (where mesh visible)
+            3. Rendered canonical-space normal map (full, on gray background)
+
+        Ref: pixel3dmm tracker.py L1410-1413
+
+        Args:
+            image_idx: frame index
+            target_image: [1, 3, H, W] aligned image
+            rendered_normals: [1, H, W, 3] world-space normals from renderer
+            rendered_mask: [1, H, W, 1] mesh visibility mask
+            cam_rotation: [1, 3, 3] R_head for rotating normals to canonical space
+            predicted_normals: [1, 3, H, W] optional pixel3dmm predicted normals
+        """
+        H = W = self.PANEL_SIZE * 2  # higher res for final preview
+
+        # Original image
+        img_np = self._tensor_to_hwc_uint8(target_image)
+        img_resized = cv2.resize(img_np, (W, H))
+
+        # Rendered normals → canonical space: R^T @ normals
+        normals_world = rendered_normals[0].detach()  # [H_r, W_r, 3]
+        if normals_world.shape[-1] != 3:
+            normals_world = normals_world.permute(1, 2, 0)
+        R = cam_rotation[0].detach()  # [3, 3]
+        # Flatten, rotate, unflatten
+        H_r, W_r = normals_world.shape[:2]
+        n_flat = normals_world.reshape(-1, 3)  # [HW, 3]
+        n_can = (R.T @ n_flat.T).T.reshape(H_r, W_r, 3)  # canonical space
+
+        # Normal colormap: (n + 1) / 2 → [0, 1] RGB
+        n_color = ((n_can + 1) / 2).clamp(0, 1)
+
+        # Mask
+        mask = rendered_mask[0].detach()  # [H_r, W_r, 1]
+        if mask.dim() == 3 and mask.shape[-1] == 1:
+            mask = mask.squeeze(-1)  # [H_r, W_r]
+        mask_bool = (mask > 0.5).float().unsqueeze(-1)  # [H_r, W_r, 1]
+
+        # Panel 2: blend = image * (1-mask) + image*0.3*mask + normal*0.7*mask
+        img_t = target_image[0].detach()
+        if img_t.shape[0] == 3:
+            img_t = img_t.permute(1, 2, 0)  # [H_r, W_r, 3]
+        # Resize normal/mask to match image if needed
+        if img_t.shape[0] != n_color.shape[0]:
+            import torch.nn.functional as F
+            n_color = F.interpolate(
+                n_color.permute(2, 0, 1).unsqueeze(0),
+                size=(img_t.shape[0], img_t.shape[1]),
+                mode='bilinear', align_corners=False
+            )[0].permute(1, 2, 0)
+            mask_bool = F.interpolate(
+                mask_bool.permute(2, 0, 1).unsqueeze(0),
+                size=(img_t.shape[0], img_t.shape[1]),
+                mode='nearest'
+            )[0].permute(1, 2, 0)
+
+        blend = img_t * (1 - mask_bool) + img_t * mask_bool * 0.3 + n_color * mask_bool * 0.7
+        blend_np = (blend.cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
+        blend_resized = cv2.resize(blend_np, (W, H))
+
+        # Panel 3: rendered normal on gray background
+        n_on_gray = torch.full_like(n_color, 0.5)  # gray background
+        n_on_gray = n_on_gray * (1 - mask_bool) + n_color * mask_bool
+        normal_np = (n_on_gray.cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
+        normal_resized = cv2.resize(normal_np, (W, H))
+
+        # Concatenate: [original | blend | normal]
+        preview = np.concatenate([img_resized, blend_resized, normal_resized], axis=1)
+
+        # Save
+        fname = f'{image_idx:05d}.png'
+        preview_dir = self.base_dir / '04_preview'
+        preview_dir.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(preview_dir / fname), cv2.cvtColor(preview, cv2.COLOR_RGB2BGR))
+        return preview
+
+    # ------------------------------------------------------------------
     # Final result
     # ------------------------------------------------------------------
 

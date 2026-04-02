@@ -12,8 +12,13 @@ class PreprocessedData:
     face_segmentation: torch.Tensor    # [1, 512, 512] int, 19-class BiSeNet
     target_image: torch.Tensor         # [1, 3, 512, 512] aligned image
     target_lmks_68: torch.Tensor       # [1, 68, 2] pixel coords
-    target_lmks_eyes: torch.Tensor     # [1, 10, 2] pixel coords
-    arcface_feat: torch.Tensor         # [1, 512] L2-normalized
+    target_lmks_eyes: torch.Tensor     # [1, 10, 2] pixel coords (MediaPipe iris)
+    lmk_mask: torch.Tensor = None      # [1, 68, 1] landmark validity mask
+    target_iris_left: torch.Tensor = None   # [1, 1, 2] left iris center
+    target_iris_right: torch.Tensor = None  # [1, 1, 2] right iris center
+    iris_mask_left: torch.Tensor = None     # [1, 1, 1] iris detection mask
+    iris_mask_right: torch.Tensor = None    # [1, 1, 1] iris detection mask
+    arcface_feat: torch.Tensor = None       # [1, 512] L2-normalized
 
 
 @dataclass
@@ -26,12 +31,16 @@ class SharedParams:
 
 @dataclass
 class PerImageParams:
-    """每图独立的优化参数 (状态)"""
-    expression: torch.Tensor     # [1, 100]
-    head_pose: torch.Tensor      # [1, 3] axis-angle
-    jaw_pose: torch.Tensor       # [1, 3] axis-angle
-    translation: torch.Tensor    # [1, 3]
-    lighting: torch.Tensor       # [1, 9, 3] SH coefficients
+    """每图独立的优化参数 (状态) — all rotations in 6D format."""
+    expression: torch.Tensor      # [1, 100]
+    R_6d: torch.Tensor            # [1, 6] head rotation (6D, pixel3dmm convention)
+    jaw_6d: torch.Tensor          # [1, 6] jaw rotation (6D)
+    translation: torch.Tensor     # [1, 3]
+    lighting: torch.Tensor        # [1, 9, 3] SH coefficients
+    principal_point: torch.Tensor = None  # [1, 2]
+    eyes_6d: torch.Tensor = None  # [1, 12] eye pose (6D left + 6D right)
+    neck_6d: torch.Tensor = None  # [1, 6] neck pose (6D)
+    eyelids: torch.Tensor = None  # [1, 2] eyelid params
 
 
 @dataclass

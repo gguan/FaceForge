@@ -38,26 +38,33 @@ class Stage2Config:
     # 无 coarse_lmk / coarse_uv 分段。只有 LR 在 50%/75%/90% 处衰减。
     # 我们保留分段结构方便 debug，但 medium（= pixel3dmm 主循环）设为 500。
     # coarse_lmk / coarse_uv 是我们自己加的预热阶段，pixel3dmm 中不存在。
-    coarse_lmk_steps: int = 250   # optimize_camera 前半段：landmark only，仅 R/t/focal
-    coarse_uv_steps: int = 250    # optimize_camera 后半段：UV only（landmark 关闭），仅 R/t/focal
+    coarse_lmk_steps: int = 1000  # pixel3dmm: 500 but we need more for focal convergence
+    coarse_uv_steps: int = 500    # optimize_camera 后半段：UV only（landmark 关闭），仅 R/t/focal
     medium_steps: int = 500       # optimize_color(is_joint=False)：所有 loss 全开
     fine_pca_steps: int = 0
     fine_detail_steps: int = 0
     enable_fine_detail: bool = False
 
     # === 学习率 (ref: pixel3dmm defaults) ===
-    lr_shape: float = 0.002
-    lr_expression: float = 0.005
-    lr_head_pose: float = 0.005
-    lr_jaw_pose: float = 0.005
-    lr_translation: float = 0.001
-    lr_focal: float = 0.02
+    lr_shape: float = 0.002       # pixel3dmm: lr_id = 0.002
+    lr_expression: float = 0.005  # pixel3dmm: lr_exp = 0.005
+    lr_R: float = 0.005           # pixel3dmm: lr_R = 0.005 (head rotation 6D)
+    lr_jaw: float = 0.005         # pixel3dmm: lr_jaw = 0.005
+    lr_translation: float = 0.001 # pixel3dmm: lr_t = 0.001
+    lr_focal: float = 0.02        # pixel3dmm: lr_f = 0.02 (coarse only, frozen in medium)
+    lr_focal_medium: float = 0.002 # reduced lr for medium stage (pixel3dmm freezes it)
     lr_texture: float = 0.005
     lr_lighting: float = 0.01
     lr_texture_disp: float = 0.001
 
-    # === Loss 权重 (ref: pixel3dmm tracker.py) ===
-    w_landmark: float = 5000.0
+    # === Loss 权重 (ref: pixel3dmm tracking.yaml + tracker.py) ===
+    # Landmark weights (individual components, not combined)
+    # pixel3dmm: w_lmks=1000, eye×5=5000, lid×500=500000, iris×50=50000
+    w_lmks: float = 1000.0            # eye contour base weight
+    w_lmks_lid: float = 1000.0        # eye closure base weight
+    w_lmks_iris: float = 1000.0       # iris base weight (×50 in loss)
+    w_lmk_camera: float = 3000.0      # optimize_camera landmark weight (all 68)
+    # Dense losses
     w_pixel3dmm_uv: float = 2000.0
     w_normal: float = 1000.0
     w_sil: float = 500.0
@@ -65,12 +72,20 @@ class Stage2Config:
     w_region_weight: float = 0.0
     w_photometric: float = 0.0
     w_identity: float = 0.0
+    # Mirror symmetry (pixel3dmm: 5000)
+    w_mirror: float = 5000.0
+    # Eye/neck regularization (pixel3dmm tracker.py L914-919)
+    w_eye_sym: float = 0.1       # eye symmetry: (right-left)^2
+    w_eye_reg: float = 0.01      # each eye → identity
+    w_neck: float = 0.1          # neck → identity
+    # Normal loss mode
+    normal_l2: bool = False       # pixel3dmm: configurable L1/L2
 
     # === PRDL (experimental) ===
     use_prdl: bool = False
     w_prdl: float = 0.0
 
-    # === 正则化 (ref: pixel3dmm defaults) ===
+    # === 正则化 (ref: pixel3dmm tracking.yaml) ===
     w_reg_shape_to_mica: float = 0.2
     w_reg_shape_to_zero: float = 0.05
     w_reg_expression: float = 0.05
@@ -89,15 +104,15 @@ class Stage2Config:
     normal_eye_dilate_kernel: int = 13
 
     # === Landmark ===
-    nose_landmark_weight: float = 3.0
+    # (weights are now in w_lmks, w_lmks_lid, w_lmks_iris above)
 
     # === LR 衰减 ===
     lr_decay_milestones: tuple = (0.5, 0.75, 0.9)
 
     # === 梯度安全 ===
     use_nan_guard: bool = True
-    focal_length_min: float = 1.5
-    focal_length_max: float = 8.0
+    focal_length_min: float = 2.0
+    focal_length_max: float = 6.0
 
     # === 遮挡过滤 ===
     use_occlusion_filter: bool = True
@@ -116,10 +131,8 @@ class Stage2Config:
     global_iters: int = 5000         # joint 阶段总步数 (= pixel3dmm config.global_iters)
     global_lr_scale: float = 0.1
 
-    # === pixel3dmm 兼容模式 ===
-    # True: 仅使用眼部关键点权重（与 pixel3dmm tracker 完全一致）
-    # False: 使用完整 68 点权重（鼻子额外加权）
-    pixel3dmm_compat: bool = False
+    # === pixel3dmm 兼容 ===
+    # landmark/loss 现在默认匹配 pixel3dmm，无需额外开关
 
     # === 输出 ===
     output_dir: str = 'output'

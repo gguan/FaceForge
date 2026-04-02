@@ -13,7 +13,8 @@ def normal_loss(rendered_normals: torch.Tensor, predicted_normals: torch.Tensor,
                 cam_rotation: torch.Tensor | None = None,
                 eye_mask: torch.Tensor | None = None,
                 delta_n: float = 0.33,
-                eye_dilate_kernel: int = 13) -> torch.Tensor:
+                eye_dilate_kernel: int = 13,
+                use_l2: bool = False) -> torch.Tensor:
     """Normal consistency with outlier filtering and eye exclusion.
 
     Uses L1 of raw normal differences (not cosine distance) to match the
@@ -65,7 +66,10 @@ def normal_loss(rendered_normals: torch.Tensor, predicted_normals: torch.Tensor,
 
     mask = face_mask.bool() & valid
 
-    # L1 loss over valid pixels, .mean() over full tensor including zeros
-    # to match pixel3dmm reference normalization (ref: losses.py L122-126)
-    loss = (l_map.abs() * mask.unsqueeze(-1).float()).mean()
+    # Loss over valid pixels (pixel3dmm: configurable L1/L2, default L1)
+    mask_f = mask.unsqueeze(-1).float()
+    if use_l2:
+        loss = (l_map.pow(2) * mask_f).mean()
+    else:
+        loss = (l_map.abs() * mask_f).mean()
     return loss

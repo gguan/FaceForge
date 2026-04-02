@@ -234,8 +234,8 @@ def read_tracker_results(
 
         per_image_params.append(PerImageParams(
             expression=exp_i,
-            head_pose=head_pose,
-            jaw_pose=jaw_pose,
+            R_6d=R_6d.cpu(),
+            jaw_6d=jaw_6d.cpu(),
             translation=t_i,
             lighting=lighting,
         ))

@@ -116,60 +116,67 @@ class FLAMEWrapper(nn.Module):
     # Forward
     # ------------------------------------------------------------------
 
-    def forward(self, shape_params, expression_params, head_pose, jaw_pose):
-        """Differentiable FLAME forward pass.
+    def forward(self, shape_params, expression_params, R_6d, jaw_6d,
+                eyes_6d=None, neck_6d=None, eyelids=None):
+        """Differentiable FLAME forward pass — all params in 6D rotation format.
+
+        Matches pixel3dmm tracker.py exactly:
+          1. FLAME outputs canonical vertices (NO rot_params)
+          2. Contour landmark selection uses rot_params_lmk_shift=inv(R_head)
+          3. Caller applies external rotation: R @ v_can + t
 
         Args:
             shape_params:      [B, 300] shape coefficients
             expression_params: [B, 100] expression coefficients
-            head_pose:         [B, 3]   axis-angle global rotation
-            jaw_pose:          [B, 3]   axis-angle jaw rotation
+            R_6d:              [B, 6]   head rotation (6D format)
+            jaw_6d:            [B, 6]   jaw rotation (6D format)
+            eyes_6d:           [B, 12]  optional 6D eye pose (left 6 + right 6)
+            neck_6d:           [B, 6]   optional 6D neck pose
+            eyelids:           [B, 2]   optional eyelid params
 
         Returns:
-            vertices:       [B, 5023, 3]
-            landmarks_68:   [B, 68, 3]
-            landmarks_eyes: [B, 10, 3]
+            vertices_can:   [B, 5023, 3]  canonical (unrotated) vertices
+            landmarks_68:   [B, 68, 3]    canonical landmarks
+            landmarks_eyes: [B, 10, 3]    canonical eye landmarks
+            R_head:         [B, 3, 3]     head rotation matrix
         """
-        from pixel3dmm.utils.utils_3d import matrix_to_rotation_6d
+        from pixel3dmm.utils.utils_3d import (
+            rotation_6d_to_matrix, matrix_to_rotation_6d)
 
-        # Convert axis-angle → 6D rotation (pixel3dmm FLAME expects 6D)
-        rot_6d = _aa_to_6d(head_pose)    # [B, 6]
-        jaw_6d = _aa_to_6d(jaw_pose)     # [B, 6]
+        B = R_6d.shape[0]
+        device, dtype = R_6d.device, R_6d.dtype
 
-        # ── Contour landmark selection fix ────────────────────────────────
-        # pixel3dmm calls FLAME with cameras=inv(R_base) and
-        # rot_params_lmk_shift=inv(_R) so that the jaw-contour selection
-        # picks the correct visible side for the current camera view.
-        #
-        # Our setup: camera is frontal (R_base = I), head rotation is applied
-        # inside FLAME via rot_params.  For a frontal camera the correct
-        # contour-selection rotation is:
-        #   cameras     = I   (no camera tilt)
-        #   rot_lmk_shift = inv(head_pose)  → rel_rot = I @ inv(R_head)
-        #
-        # Without this fix: rel_rot = R_head → selects the WRONG side of the
-        # jaw contour for any non-frontal head pose (bug: index 39+θ vs θ).
-        # Ref: pixel3dmm tracker.py L853-854
-        B = head_pose.shape[0]
-        R_head = _batch_rodrigues(head_pose)                    # [B, 3, 3]
+        # 6D → rotation matrix for external application
+        R_head = rotation_6d_to_matrix(R_6d)                    # [B, 3, 3]
+        # Contour landmark selection: inv(R_head)
         R_head_inv = R_head.transpose(-1, -2)                   # [B, 3, 3]
         rot_lmk_shift_6d = matrix_to_rotation_6d(R_head_inv)   # [B, 6]
-        cameras_I = torch.eye(3, device=head_pose.device,
-                              dtype=head_pose.dtype).unsqueeze(0).expand(B, -1, -1)
+        cameras_I = torch.eye(3, device=device, dtype=dtype).unsqueeze(0).expand(B, -1, -1)
 
-        # pixel3dmm FLAME returns:
-        #   vertices, lmk68, joint_transforms, v_can, vertices_noneck
-        vertices, lmk68, _jt, _vcan, _vnoneck = self._flame(
+        # Default identity for optional params
+        I6d = matrix_to_rotation_6d(torch.eye(3, device=device, dtype=dtype).unsqueeze(0))
+        if eyes_6d is None:
+            eyes_6d = I6d.repeat(1, 2)  # [B, 12]
+        if neck_6d is None:
+            neck_6d = I6d.expand(B, -1)  # [B, 6]
+        if eyelids is None:
+            eyelids = torch.zeros(B, 2, device=device, dtype=dtype)
+
+        # pixel3dmm FLAME: no rot_params → canonical output
+        # Ref: pixel3dmm tracker.py L624-631, L846-856
+        vertices_can, lmk68, _jt, _vcan_can, _vnoneck = self._flame(
             shape_params=shape_params,
             cameras=cameras_I,
-            rot_params=rot_6d,
             jaw_pose_params=jaw_6d,
             expression_params=expression_params,
+            eye_pose_params=eyes_6d,
+            neck_pose_params=neck_6d,
+            eyelid_params=eyelids,
             rot_params_lmk_shift=rot_lmk_shift_6d,
         )
 
-        landmarks_eyes = vertices[:, R_EYE_INDICES + L_EYE_INDICES, :]
-        return vertices, lmk68, landmarks_eyes
+        landmarks_eyes = vertices_can[:, R_EYE_INDICES + L_EYE_INDICES, :]
+        return vertices_can, lmk68, landmarks_eyes, R_head
 
     # ------------------------------------------------------------------
     # Vertex normals (not in pixel3dmm FLAME)

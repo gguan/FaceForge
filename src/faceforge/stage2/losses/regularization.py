@@ -11,31 +11,35 @@ from ..config import Stage2Config
 
 
 def regularization_loss(shape: torch.Tensor, expression: torch.Tensor,
-                        jaw_pose: torch.Tensor, lighting: torch.Tensor,
+                        jaw_6d: torch.Tensor, lighting: torch.Tensor,
                         mica_init_shape: torch.Tensor,
                         config: Stage2Config,
                         texture_displacement: torch.Tensor | None = None) -> torch.Tensor:
     """Combined regularization loss.
 
+    pixel3dmm: torch.sum(x**2, dim=-1).mean() — sum over params, mean over batch.
+    Jaw regularization: (I6D - jaw)^2 towards identity 6D rotation.
+    Ref: pixel3dmm tracker.py L913-922
+
     Args:
         shape: [B, 300] current shape params
         expression: [B, 100]
-        jaw_pose: [B, 3]
+        jaw_6d: [B, 6] jaw rotation in 6D format
         lighting: [B, 9, 3] SH coefficients
         mica_init_shape: [1, 300] MICA initial shape (frozen target)
         config: Stage2Config
-
-    Returns:
-        scalar loss
     """
-    # Shape: constrain to MICA initial value (not zero!)
-    loss = config.w_reg_shape_to_mica * (shape - mica_init_shape).pow(2).mean()
-    # Auxiliary: constrain to zero (lower weight, prevents divergence)
-    loss = loss + config.w_reg_shape_to_zero * shape.pow(2).mean()
+    # Shape: constrain to MICA initial value
+    loss = config.w_reg_shape_to_mica * (shape - mica_init_shape).pow(2).sum(dim=-1).mean()
+    loss = loss + config.w_reg_shape_to_zero * shape.pow(2).sum(dim=-1).mean()
 
-    # Expression + Jaw
-    loss = loss + config.w_reg_expression * expression.pow(2).mean()
-    loss = loss + config.w_reg_jaw * jaw_pose.pow(2).mean()
+    # Expression
+    loss = loss + config.w_reg_expression * expression.pow(2).sum(dim=-1).mean()
+
+    # Jaw: pixel3dmm uses (I6D - jaw)^2 — penalize deviation from identity
+    # I6D = [1, 0, 0, 0, 1, 0] for 6D rotation
+    I6d = torch.tensor([1., 0., 0., 0., 1., 0.], device=jaw_6d.device, dtype=jaw_6d.dtype)
+    loss = loss + config.w_reg_jaw * (I6d - jaw_6d).pow(2).sum(dim=-1).mean()
 
     # SH monochrome: penalize RGB channel divergence
     sh_mean = lighting.mean(dim=-1, keepdim=True)  # [B, 9, 1]

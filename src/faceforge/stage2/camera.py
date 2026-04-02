@@ -15,7 +15,13 @@ from .flame_wrapper import batch_rodrigues
 
 def build_intrinsics(focal_length: torch.Tensor, principal_point: torch.Tensor,
                      image_size: int) -> torch.Tensor:
-    """Build intrinsics matrix K from normalized parameters.
+    """Build intrinsics matrix K matching pixel3dmm get_intrinsics(use_hack=True).
+
+    pixel3dmm formula (tracker.py L76-85):
+        fx = fy = focal_length * size
+        cx = size/2 + 0.5 + pp_x * (size/2 + 0.5)
+        cy = size/2 + 0.5 + pp_y * (size/2 + 0.5)
+        if use_hack: cx = size - cx   (flips cx for projection compatibility)
 
     Args:
         focal_length: [B, 1] normalized focal length
@@ -27,10 +33,15 @@ def build_intrinsics(focal_length: torch.Tensor, principal_point: torch.Tensor,
     """
     B = focal_length.shape[0]
     device, dtype = focal_length.device, focal_length.dtype
+    s = float(image_size)
 
-    fx = fy = focal_length * image_size  # [B, 1]
-    cx = principal_point[:, 0:1] * image_size + image_size / 2  # [B, 1]
-    cy = principal_point[:, 1:2] * image_size + image_size / 2  # [B, 1]
+    fx = fy = focal_length * s  # [B, 1]
+    # pixel3dmm: cx_raw = size/2 + 0.5 + pp * (size/2 + 0.5)
+    half_plus = s / 2 + 0.5
+    cx_raw = half_plus + principal_point[:, 0:1] * half_plus  # [B, 1]
+    cy = half_plus + principal_point[:, 1:2] * half_plus      # [B, 1]
+    # pixel3dmm use_hack: cx = size - cx_raw
+    cx = s - cx_raw  # [B, 1]
 
     zeros = torch.zeros(B, 1, device=device, dtype=dtype)
     ones = torch.ones(B, 1, device=device, dtype=dtype)
@@ -71,53 +82,71 @@ def build_extrinsics(head_pose: torch.Tensor, translation: torch.Tensor) -> torc
 
 def project_points(points_3d: torch.Tensor, K: torch.Tensor,
                    RT: torch.Tensor, image_size: int = 512) -> torch.Tensor:
-    """Project 3D points to 2D pixel coordinates (image y-down convention).
+    """Project 3D points to 2D pixel coords matching pixel3dmm exactly.
 
-    OpenGL camera convention: camera looks in -z; objects in front of the camera
-    have z_cam < 0.  Projection formula: u = fx*(x/-z) + cx, v_yup = fy*(y/-z) + cy.
-    Ref: pixel3dmm tracker.py project_points_screen_space
+    pixel3dmm project_points_screen_space (tracker.py L97-114):
+        v_cam = v_world @ w2c^T
+        v' = v_cam[:3] / -v_cam[2]
+        proj = (-1) * (K @ v')[:2]
+        x_screen = size - 1 - proj[0]
+        y_screen = proj[1]
+
+    With RT=identity (our convention), v_cam = v_world.
 
     Args:
         points_3d: [B, N, 3] points in world space
-        K: [B, 3, 3] intrinsics
+        K: [B, 3, 3] intrinsics (with pixel3dmm hack applied)
         RT: [B, 4, 4] world-to-camera extrinsics
-        image_size: int, needed for y-flip
+        image_size: int
 
     Returns:
-        points_2d: [B, N, 2] pixel coordinates (x right, y down)
-        depths: [B, N] z-depth in camera space (negative for visible points)
+        points_2d: [B, N, 2] pixel coordinates
+        depths: [B, N] z-depth in camera space (negative for visible)
     """
     R = RT[:, :3, :3]  # [B, 3, 3]
     t = RT[:, :3, 3:]  # [B, 3, 1]
 
     # World → Camera
     points_cam = torch.bmm(R, points_3d.transpose(1, 2)) + t  # [B, 3, N]
+    z_cam = points_cam[:, 2, :]  # [B, N], negative for visible points
 
-    z_cam = points_cam[:, 2, :]  # [B, N], negative for visible points (OpenGL)
+    # pixel3dmm: v' = v[:3] / -z  (divide by -z, making denominator positive)
+    neg_z = -z_cam  # [B, N], positive for visible
+    v_prime = points_cam / (neg_z.unsqueeze(1) + 1e-8)  # [B, 3, N]
 
-    # OpenGL projection: divide by -z (positive for visible points).
-    # Applying K to [x, y, -z] and dividing by -z yields:
-    #   u = fx * x / (-z) + cx
-    #   v_yup = fy * y / (-z) + cy
-    # This matches pixel3dmm's project_points_screen_space (divide-by-minus-z branch).
-    points_cam_negz = points_cam.clone()
-    points_cam_negz[:, 2, :] = -z_cam  # flip z so the denominator is positive
+    # pixel3dmm: proj = (-1) * (K @ v')[:2]
+    kv = torch.bmm(K, v_prime)  # [B, 3, N]
+    proj = (-1.0) * kv[:, :2, :]  # [B, 2, N]
 
-    # Camera → Image
-    points_proj = torch.bmm(K, points_cam_negz)  # [B, 3, N]
+    # pixel3dmm: x_screen = size - 1 - proj[0],  y_screen = proj[1]
+    points_2d = proj.clone()
+    points_2d[:, 0, :] = (image_size - 1) - proj[:, 0, :]  # x flip
+    # y stays as proj[1]
 
-    # Perspective divide (denominator is -z_cam > 0 for visible points)
-    pos_depth = points_proj[:, 2, :]  # = -z_cam
-    points_2d = points_proj[:, :2, :] / (pos_depth.unsqueeze(1) + 1e-8)  # [B, 2, N]
-
-    # y-flip: OpenGL camera y-up → image y-down.
-    # Matches the flip(1) applied to nvdiffrast output in renderer.py.
-    points_2d = points_2d.clone()
-    points_2d[:, 1, :] = (image_size - 1) - points_2d[:, 1, :]
-
-    # Return raw z_cam (negative) as depths — used by compute_visibility_mask which
-    # samples the depth buffer (also negative z_cam) and checks sampled < vertex + eps.
     return points_2d.transpose(1, 2), z_cam  # [B, N, 2], [B, N]
+
+
+def build_intrinsics_standard(focal_length: torch.Tensor, image_size: int) -> torch.Tensor:
+    """Build standard intrinsics (no hack) for renderer projection matrix.
+
+    pixel3dmm uses standard K (cx=cy=size//2) for nvdiffrast projection,
+    NOT the hacked K used for project_points_screen_space.
+    Ref: pixel3dmm tracker.py L448-450
+    """
+    B = focal_length.shape[0]
+    device, dtype = focal_length.device, focal_length.dtype
+    s = float(image_size)
+    fx = fy = focal_length * s
+    cx = torch.full((B, 1), s / 2, device=device, dtype=dtype)
+    cy = torch.full((B, 1), s / 2, device=device, dtype=dtype)
+    zeros = torch.zeros(B, 1, device=device, dtype=dtype)
+    ones = torch.ones(B, 1, device=device, dtype=dtype)
+    K = torch.stack([
+        torch.cat([fx, zeros, cx], dim=1),
+        torch.cat([zeros, fy, cy], dim=1),
+        torch.cat([zeros, zeros, ones], dim=1),
+    ], dim=1)
+    return K
 
 
 def _build_projection_matrix(K: torch.Tensor, image_size: int,
@@ -146,7 +175,7 @@ def _build_projection_matrix(K: torch.Tensor, image_size: int,
 
     proj = torch.zeros(B, 4, 4, device=K.device, dtype=K.dtype)
     proj[:, 0, 0] = fx * 2 / w
-    proj[:, 1, 1] = fy * 2 / h
+    proj[:, 1, 1] = fy * 2 / h   # Positive (VHAP convention, renderer does y-flip)
     proj[:, 0, 2] = (w - 2 * cx) / w
     proj[:, 1, 2] = (h - 2 * cy) / h
     proj[:, 2, 2] = -(zfar + znear) / (zfar - znear)

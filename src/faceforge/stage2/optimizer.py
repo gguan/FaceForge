@@ -16,36 +16,42 @@ from .data_types import SharedParams, PerImageParams
 STAGE_PARAMS = {
     # pixel3dmm optimize_camera(): 只优化相机/姿态参数，冻结 shape/expression/jaw
     # Ref: tracker.py L608-614 (params only include t, R, focal_length, principal_point)
+    # pixel3dmm optimize_camera: t, R, focal, pp
     'coarse_lmk': {
         'shared': [],
-        'per_image': ['head_pose', 'translation'],
+        'per_image': ['R_6d', 'translation', 'principal_point'],
         'shared_if_single': ['focal_length'],
     },
     'coarse_uv': {
         'shared': [],
-        'per_image': ['head_pose', 'translation'],
+        'per_image': ['R_6d', 'translation', 'principal_point'],
         'shared_if_single': ['focal_length'],
     },
+    # pixel3dmm optimize_color: R, t, exp, jaw, eyes, eyelids
+    # pixel3dmm freezes focal in medium (global_camera=True), but our coarse focal
+    # converges to a different value due to MediaPipe landmarks. We keep focal
+    # optimizable in medium with a low lr to allow gradual adjustment.
+    # pixel3dmm: focal/pp FROZEN in optimize_color (global_camera=True)
     'medium': {
         'shared': ['shape'],
-        'per_image': ['expression', 'head_pose', 'jaw_pose', 'translation'],
-        'shared_if_single': ['focal_length'],
+        'per_image': ['expression', 'R_6d', 'jaw_6d', 'translation'],
+        'shared_if_single': [],
     },
     'fine_pca': {
         'shared': ['shape', 'texture'],
-        'per_image': ['expression', 'head_pose', 'jaw_pose', 'translation', 'lighting'],
+        'per_image': ['expression', 'R_6d', 'jaw_6d', 'translation', 'lighting'],
         'shared_if_single': ['focal_length'],
     },
     'fine_detail': {
         'shared': ['shape', 'texture'],
-        'per_image': ['expression', 'head_pose', 'jaw_pose', 'translation', 'lighting'],
+        'per_image': ['expression', 'R_6d', 'jaw_6d', 'translation', 'lighting'],
         'shared_if_single': ['focal_length'],
     },
 }
 
 # Large params decay faster (pose/camera), small params decay slower (shape/exp)
 # Ref: pixel3dmm tracker.py — t, R, jaw are "large"; focal_length is "small"
-LARGE_PARAMS = {'head_pose', 'jaw_pose', 'translation'}
+LARGE_PARAMS = {'R_6d', 'jaw_6d', 'translation'}  # pixel3dmm: t, R, jaw decay faster
 
 STAGE_ORDER = ['coarse_lmk', 'coarse_uv', 'medium', 'fine_pca', 'fine_detail']
 
@@ -58,12 +64,16 @@ class Stage2Optimizer:
         self.lr_map = {
             'shape': config.lr_shape,
             'expression': config.lr_expression,
-            'head_pose': config.lr_head_pose,
-            'jaw_pose': config.lr_jaw_pose,
+            'R_6d': config.lr_R,
+            'jaw_6d': config.lr_jaw,
             'focal_length': config.lr_focal,
             'translation': config.lr_translation,
             'texture': config.lr_texture,
             'lighting': config.lr_lighting,
+            'principal_point': 0.0001,  # pixel3dmm tracker.py L610
+            'eyes_6d': 0.005,           # pixel3dmm tracker.py L513
+            'neck_6d': 0.005,           # same as eyes
+            'eyelids': 0.002,           # pixel3dmm tracker.py L514
         }
 
     def get_steps(self, stage: str) -> int:
@@ -103,6 +113,9 @@ class Stage2Optimizer:
                 continue
             tensor.requires_grad_(True)
             lr = self.lr_map.get(name, 0.001) * lr_scale
+            # Reduce focal lr in medium+ (pixel3dmm freezes it, we use low lr instead)
+            if name == 'focal_length' and stage in ('medium', 'fine_pca', 'fine_detail'):
+                lr = self.config.lr_focal_medium * lr_scale
             param_groups.append({'params': [tensor], 'lr': lr, 'name': name, 'initial_lr': lr})
 
         # Per-image params
@@ -140,7 +153,8 @@ class Stage2Optimizer:
                 tensor.requires_grad_(name in active_shared)
 
         for pip in per_image_params:
-            for name in ['expression', 'head_pose', 'jaw_pose', 'translation', 'lighting']:
+            for name in ['expression', 'R_6d', 'jaw_6d', 'translation', 'lighting',
+                         'principal_point', 'eyes_6d', 'neck_6d', 'eyelids']:
                 tensor = getattr(pip, name, None)
                 if tensor is not None:
                     tensor.requires_grad_(name in active_per)
