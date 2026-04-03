@@ -24,6 +24,21 @@ from .aggregation import aggregate_shapes
 from .visualization import Stage1Visualizer
 
 
+WFLW_2_iBUG68 = np.array([
+    0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32, 33,
+    34, 35, 36, 37, 42, 43, 44, 45, 46, 51, 52, 53, 54, 55, 56, 57, 58,
+    59, 60, 61, 63, 64, 65, 67, 68, 69, 71, 72, 73, 75, 76, 77, 78, 79,
+    80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95,
+])
+
+
+def _lmk68_to_98(lmks_68: np.ndarray) -> np.ndarray:
+    lmks_98 = np.zeros((98, 2), dtype=np.float32)
+    for ibug_idx, wflw_idx in enumerate(WFLW_2_iBUG68):
+        lmks_98[wflw_idx] = lmks_68[ibug_idx]
+    return lmks_98
+
+
 class Stage1Pipeline:
     """Complete Stage 1 pipeline: image → FLAME parameters."""
 
@@ -45,6 +60,16 @@ class Stage1Pipeline:
         else:
             print(f"[Stage1] Warning: Face parsing weights not found at {face_parsing_weights}")
             self.face_parser = None
+
+        try:
+            from .pipnet_inference import PIPNetLandmarkDetector
+            self.pipnet = PIPNetLandmarkDetector(
+                code_base=config.pixel3dmm_code_base,
+                device=config.device,
+            )
+        except Exception as exc:
+            print(f"[Stage1] Warning: PIPNet landmarks unavailable ({exc})")
+            self.pipnet = None
 
         # MICA
         self.mica = MICAInference(config)
@@ -111,6 +136,14 @@ class Stage1Pipeline:
         lmks_68_aligned = _project_lmks(detection.lmks_68)
         lmks_dense_aligned = _project_lmks(detection.lmks_dense)
         lmks_eyes_aligned = _project_lmks(detection.lmks_eyes)
+        lmks_98_aligned = None
+        if self.pipnet is not None:
+            try:
+                lmks_98_aligned = self.pipnet.predict(aligned_img)
+            except Exception as exc:
+                print(f'[Stage1] Warning: PIPNet inference failed ({exc})')
+        if lmks_98_aligned is None:
+            lmks_98_aligned = _lmk68_to_98(lmks_68_aligned)
 
         if vis:
             vis.save_alignment(image_rgb, aligned_img, detection.lmks_68)
@@ -231,6 +264,8 @@ class Stage1Pipeline:
             lmks_eyes=torch.tensor(lmks_eyes_aligned).unsqueeze(0),
             focal_length=torch.tensor([[focal_length]]),
             principal_point=torch.tensor([[0.0, 0.0]]),
+            parsing_map=torch.tensor(parsing.astype(np.int64)).unsqueeze(0) if parsing is not None else None,
+            lmks_98=torch.tensor(lmks_98_aligned).unsqueeze(0),
         )
         return output, summary_strip
 

@@ -541,21 +541,21 @@ class Stage2Pipeline:
 
     def _preprocess(self, s1out: Stage1Output) -> PreprocessedData:
         """Run Pixel3DMM and assemble PreprocessedData."""
+        seg_raw = s1out.parsing_map if s1out.parsing_map is not None else s1out.face_mask
         uv_map, normal_map = self.pixel3dmm.predict(
-            s1out.aligned_image, s1out.face_mask)
+            s1out.aligned_image, seg_raw)
 
         # Preserve raw 19-class segmentation for pixel3dmm-style mask construction
         # (needed for silhouette fg/bg split in _forward_step)
-        seg_raw = s1out.face_mask
         if seg_raw.dim() == 2:
             seg_raw = seg_raw.unsqueeze(0)   # [1, H, W]
         elif seg_raw.dim() == 3:
             pass                             # already [1, H, W]
         face_segmentation = seg_raw.long()   # [1, H, W] int
 
-        # Binary face mask: classes 1-13 = skin + facial features
-        seg = seg_raw.squeeze(0)
-        binary_mask = ((seg > 0) & (seg <= 13)).float()
+        binary_mask = s1out.face_mask
+        if binary_mask.dim() == 2:
+            binary_mask = binary_mask.unsqueeze(0)
 
         d = self.device
 
@@ -581,7 +581,7 @@ class Stage2Pipeline:
         return PreprocessedData(
             pixel3dmm_uv=uv_map,
             pixel3dmm_normals=normal_map,
-            face_mask=binary_mask.unsqueeze(0).to(d),
+            face_mask=binary_mask.float().to(d),
             face_segmentation=face_segmentation.to(d),
             target_image=s1out.aligned_image.to(d),
             target_lmks_68=lmks_68.to(d),

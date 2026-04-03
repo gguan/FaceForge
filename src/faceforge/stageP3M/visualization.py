@@ -4,6 +4,7 @@ Saves per-stage comparison images showing target vs. predicted result.
 Output format mirrors Stage 2 visualization for easy side-by-side comparison.
 """
 
+import shutil
 from pathlib import Path
 from typing import Optional
 
@@ -98,6 +99,21 @@ class P3MVisualizer:
         out_path = self.optim_dir / 'progression.png'
         cv2.imwrite(str(out_path), cv2.cvtColor(progression, cv2.COLOR_RGB2BGR))
         return progression
+
+    def preserve_tracking_outputs(self, tracker_output_dir: str | Path) -> Optional[Path]:
+        """Copy native pixel3dmm tracker artifacts into the debug output tree."""
+        source = Path(tracker_output_dir)
+        if not source.exists():
+            return None
+
+        tracking_root = self.base_dir / 'tracking'
+        tracking_root.mkdir(parents=True, exist_ok=True)
+        destination = tracking_root / source.name
+
+        if destination.exists():
+            shutil.rmtree(destination)
+        shutil.copytree(source, destination)
+        return destination
 
     # ------------------------------------------------------------------
     # Final artifact helpers (interface parity with Stage2Visualizer)

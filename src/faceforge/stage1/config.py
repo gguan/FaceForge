@@ -10,6 +10,7 @@ class Stage1Config:
     mediapipe_model_path: str = 'data/pretrained/mediapipe/face_landmarker.task'
     flame_model_path: str = 'data/pretrained/FLAME2020/generic_model.pkl'
     flame_masks_path: str = 'data/pretrained/FLAME2020/FLAME_masks.pkl'
+    pixel3dmm_code_base: str = 'submodules/pixel3dmm'
 
     # 处理参数
     align_scale_factor: float = 1.3       # flame-head-tracker tracking 标准

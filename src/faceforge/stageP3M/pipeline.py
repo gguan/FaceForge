@@ -1,11 +1,4 @@
-"""StageP3M Pipeline: Direct pixel3dmm Tracker baseline.
-
-Calls pixel3dmm's original Tracker code unmodified by writing Stage1 outputs
-to a temporary directory in pixel3dmm's expected format, running the tracker,
-and converting results back to Stage2Output.
-
-This guarantees 100% behavioral fidelity to the pixel3dmm reference.
-"""
+"""StageP3M Pipeline: pixel3dmm tracker wrapper over Stage1 outputs."""
 
 import shutil
 import tempfile
@@ -104,6 +97,7 @@ class P3MPipeline:
         # Save/restore env_paths and COMPILE flag
         old_preproc = env_paths.PREPROCESSED_DATA
         old_output = env_paths.TRACKING_OUTPUT
+        tracker_output_dir = None
 
         # Disable torch.compile before importing tracker.
         # pixel3dmm does module-level torch.compile (tracker.py L128-129)
@@ -147,6 +141,7 @@ class P3MPipeline:
             # 5. Instantiate and run tracker
             print(f'  [P3M] Running pixel3dmm tracker (render_size={render_size})...')
             tracker = tracker_module.Tracker(cfg, device=str(self.device))
+            tracker_output_dir = getattr(tracker, 'output_folder', None)
             try:
                 tracker.run()
             except Exception as e:
@@ -166,6 +161,12 @@ class P3MPipeline:
             return result
 
         finally:
+            if self.visualizer is not None and tracker_output_dir:
+                try:
+                    self.visualizer.preserve_tracking_outputs(tracker_output_dir)
+                except Exception as exc:
+                    warnings.warn(f'Failed to preserve tracker outputs: {exc}')
+
             # Restore env_paths
             env_paths.PREPROCESSED_DATA = old_preproc
             env_paths.TRACKING_OUTPUT = old_output

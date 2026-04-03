@@ -62,12 +62,12 @@ class Pixel3DMMInference:
 
     @torch.no_grad()
     def predict(self, aligned_image: torch.Tensor,
-                face_mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+                face_segmentation: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Predict UV and Normal maps.
 
         Args:
             aligned_image: [1, 3, 512, 512] uint8 or [0,255] float
-            face_mask: [1, 512, 512] int (19-class BiSeNet)
+            face_segmentation: [1, 512, 512] int (19-class BiSeNet)
 
         Returns:
             uv_map: [1, 2, 512, 512] in [0, 1]
@@ -84,7 +84,7 @@ class Pixel3DMMInference:
         # Ref: network_inference.py L127
         # (seg == 2) | ((seg > 3) & (seg < 14)) & ~(seg == 11)
         # = classes 2, 4-10, 12, 13 (excludes 0=bg, 1=skin, 3=r_brow, 11=mouth, 14+=neck/cloth/hair)
-        seg = face_mask.squeeze(0)  # [H, W]
+        seg = face_segmentation.squeeze(0)  # [H, W]
         mask = ((seg == 2) | ((seg > 3) & (seg < 14))) & ~(seg == 11)
         mask = mask.long().unsqueeze(0).unsqueeze(0)  # [1, 1, H, W] matching ref shape
 

@@ -86,7 +86,8 @@ def write_preprocessed(
         )
 
         # --- Segmentation mask ---
-        seg = s1out.face_mask.detach().cpu().squeeze().numpy().astype(np.uint8)
+        seg_source = s1out.parsing_map if s1out.parsing_map is not None else s1out.face_mask
+        seg = seg_source.detach().cpu().squeeze().numpy().astype(np.uint8)
         seg_resized = cv2.resize(seg, (render_size, render_size),
                                  interpolation=cv2.INTER_NEAREST)
         cv2.imwrite(str(base / 'seg_og' / f'{i:05d}.png'), seg_resized)
@@ -94,8 +95,11 @@ def write_preprocessed(
         # --- Landmarks (98-point WFLW format) ---
         # pixel3dmm read_data() does: lms = np.load(...) * config.size
         # So we save as fractional [0, 1] coordinates
-        lmks_68 = s1out.lmks_68[0].detach().cpu().numpy()  # [68, 2] pixel coords
-        lmks_98 = _lmk68_to_98(lmks_68)
+        if s1out.lmks_98 is not None:
+            lmks_98 = s1out.lmks_98[0].detach().cpu().numpy()
+        else:
+            lmks_68 = s1out.lmks_68[0].detach().cpu().numpy()  # [68, 2] pixel coords
+            lmks_98 = _lmk68_to_98(lmks_68)
         # Source landmarks are at render_size=512 (Stage1 align resolution).
         # pixel3dmm loads them and scales by config.size (render_size).
         # So save as fraction of 512, then at load time: fraction * render_size.
@@ -107,8 +111,9 @@ def write_preprocessed(
         np.save(base / 'PIPnet_landmarks' / f'{i:05d}.npy', lmks_98_frac)
 
         # --- UV and Normal maps via Pixel3DMM inference ---
+        face_segmentation = s1out.parsing_map if s1out.parsing_map is not None else s1out.face_mask
         uv_map, normal_map = pixel3dmm_inference.predict(
-            s1out.aligned_image, s1out.face_mask)
+            s1out.aligned_image, face_segmentation)
 
         # UV: [1, 2, H, W] in [0, 1] → save as 3-channel uint8 PNG
         uv = uv_map[0].detach().cpu()  # [2, H, W]
@@ -154,19 +159,13 @@ def build_tracker_config(
     yaml_path = Path(code_base) / 'configs' / 'tracking.yaml'
     base_cfg = OmegaConf.load(str(yaml_path))
 
-    # Apply our overrides
+    # Apply only filesystem/runtime overrides. Keep pixel3dmm's behavior
+    # on the original defaults unless the caller explicitly overrides it.
     our_overrides = OmegaConf.create({
         'video_name': video_name,
         'size': render_size,
         'image_size': [render_size, render_size],
-        'batch_size': min(16, n_frames),
-        'start_frame': 0,
-        'is_discontinuous': True,  # independent images, not video
-        'save_meshes': True,
-        'delete_preprocessing': False,
         'output_folder': output_dir,
-        'iters': 500,  # pixel3dmm default is 200 for video, 500 for images
-        'early_exit': False,
     })
 
     if overrides:
@@ -174,6 +173,17 @@ def build_tracker_config(
         cfg = OmegaConf.merge(base_cfg, our_overrides, user_overrides)
     else:
         cfg = OmegaConf.merge(base_cfg, our_overrides)
+
+    requested_batch = int(cfg.batch_size)
+    effective_batch = min(max(1, requested_batch), max(1, int(n_frames)))
+    if effective_batch > 1 and effective_batch % 2 == 1:
+        effective_batch -= 1
+    cfg.batch_size = max(1, effective_batch)
+
+    # pixel3dmm's smooth joint sampler assumes an even-sized temporal window.
+    # For single-image fitting we force the discontinuous path instead.
+    if cfg.batch_size < 2:
+        cfg.is_discontinuous = True
 
     return cfg
 
