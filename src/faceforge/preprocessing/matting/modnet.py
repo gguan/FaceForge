@@ -107,8 +107,8 @@ class MODNetMatter(BaseMatter):
             image_rgb = image_rgb[..., :3]
 
         h, w = image_rgb.shape[:2]
-        # Match the original script's resize policy: long edge to ref_size,
-        # rounded down to a multiple of 32.
+        # Match the original MODNet inference script: short edge → ref_size,
+        # then both dims rounded down to a multiple of 32.
         if max(h, w) < cfg.ref_size or min(h, w) > cfg.ref_size:
             if w >= h:
                 rh, rw = cfg.ref_size, int(w / h * cfg.ref_size)

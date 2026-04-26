@@ -39,7 +39,13 @@ def _ffhq_quad_from_eye_mouth(
     eye_to_mouth = mouth_avg - eye_avg
 
     x = eye_to_eye - np.flipud(eye_to_mouth) * [-1.0, 1.0]
-    x /= np.hypot(*x)
+    x_norm = float(np.hypot(*x))
+    if x_norm < 1e-8:
+        raise ValueError(
+            "degenerate FFHQ alignment keypoints — eye/mouth landmarks are "
+            "collinear or coincident; cannot construct an oriented quad"
+        )
+    x /= x_norm
     x *= max(np.hypot(*eye_to_eye) * 2.0, np.hypot(*eye_to_mouth) * 1.8) * scale_factor
     y = np.flipud(x) * [-1.0, 1.0]
     c = eye_avg + eye_to_mouth * 0.1

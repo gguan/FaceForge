@@ -240,21 +240,31 @@ class PIPNetLandmarkDetector:
             net_stride=cfg.net_stride,
         )
 
+    def detect_face(self, image_rgb: np.ndarray):
+        """Run FaceBoxes and return the highest-confidence ``'face'`` detection.
+
+        Returns the FaceBoxes detection tuple ``(label, conf, x, y, w, h)`` or
+        ``None`` if nothing was found above ``self.threshold``.
+        """
+        image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
+        detections, _ = self.detector.detect(image_bgr, self.threshold, 1)
+        detections = [d for d in detections if d[0] == 'face']
+        if not detections:
+            return None
+        detections.sort(key=lambda x: -x[1])
+        return detections[0]
+
     @torch.no_grad()
-    def predict(self, image_rgb: np.ndarray) -> np.ndarray | None:
-        """Predict 98 WFLW landmarks in pixel coordinates."""
+    def predict_from_detection(self, image_rgb: np.ndarray, det) -> np.ndarray:
+        """Predict 98 WFLW landmarks given a precomputed FaceBoxes detection.
+
+        ``det`` is expected to be a tuple in FaceBoxesDetector's native format:
+        ``(label, conf, x, y, w, h)``. No detection threshold is enforced here
+        — the caller decides whether the detection is good enough to use.
+        """
         image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
         image_height, image_width = image_bgr.shape[:2]
 
-        detections, _ = self.detector.detect(image_bgr, self.threshold, 1)
-        detections = [det for det in detections if det[0] == 'face']
-        detections.sort(key=lambda x: -1 * x[1])
-        if not detections:
-            return None
-        if detections[0][1] < 0.99:
-            return None
-
-        det = detections[0]
         det_xmin = int(det[2])
         det_ymin = int(det[3])
         det_width = int(det[4])
@@ -306,3 +316,15 @@ class PIPNetLandmarkDetector:
             pred_export[i, 1] = y_pred + det_ymin
 
         return pred_export
+
+    def predict(self, image_rgb: np.ndarray) -> np.ndarray | None:
+        """Predict 98 WFLW landmarks in pixel coordinates.
+
+        Mirrors the original PIPNet demo script: returns ``None`` when no
+        face is detected, or when the top detection's confidence is below
+        0.99 (the script's quality cutoff).
+        """
+        det = self.detect_face(image_rgb)
+        if det is None or det[1] < 0.99:
+            return None
+        return self.predict_from_detection(image_rgb, det)
