@@ -115,10 +115,68 @@ def _build_prepared(
     )
 
 
+def _build_prepared_from_shared(image_id: str, preproc_dir: Path) -> PreparedInputs:
+    """Build a PreparedInputs from a shared-preprocessing dir (run_preprocessing.py).
+
+    Reads source.png + cropped.jpg + crop_meta + lmks_pipnet98 + seg_facer
+    + identity_mica from ``preproc_dir/<image_id>/``. Faster than
+    re-running the preprocessing components per model.
+    """
+    sub = preproc_dir / image_id
+    if not sub.exists():
+        raise FileNotFoundError(f'shared preprocessing missing: {sub}')
+
+    rgb = cv2.cvtColor(cv2.imread(str(sub / 'source.png')), cv2.COLOR_BGR2RGB)
+    cropped = cv2.cvtColor(cv2.imread(str(sub / 'cropped.jpg')), cv2.COLOR_BGR2RGB)
+    crop_meta = np.load(sub / 'crop_meta.npz')
+
+    from faceforge.preprocessing.landmark.base import LandmarkResult
+    from faceforge.preprocessing.segmentation.base import SegmentationResult
+
+    lmks = np.load(sub / 'lmks_pipnet98.npy').astype(np.float32)
+    bbox = np.load(sub / 'bbox.npy').astype(np.float32)
+    kps5 = np.load(sub / 'lmks_kps5pt.npy').astype(np.float32)
+
+    seg_map = cv2.imread(str(sub / 'seg_facer.png'), cv2.IMREAD_UNCHANGED)
+    face_mask = (cv2.imread(str(sub / 'face_mask.png'), cv2.IMREAD_UNCHANGED) > 0)
+
+    identity_path = sub / 'identity_mica.npy'
+    if not identity_path.exists():
+        raise FileNotFoundError(
+            f'identity_mica.npy missing in {sub} — re-run run_preprocessing.py '
+            f'with --with-mica (default)')
+    identity_shape = np.load(identity_path).astype(np.float32)
+
+    return PreparedInputs(
+        image_rgb=rgb,
+        image_id=image_id,
+        image_path=str(sub / 'source.png'),
+        aligned_image=cropped,
+        crop_transform=crop_meta['M'],
+        crop_quad=crop_meta['quad'],
+        landmarks={
+            'wflw_98': LandmarkResult(
+                landmarks=lmks, bbox=bbox[:4], confidence=float(bbox[4]),
+                n_points=98, scheme='wflw_98', kps_5pt=kps5,
+            ),
+        },
+        segmentation=SegmentationResult(
+            seg_map=seg_map, face_mask=face_mask,
+            n_classes=int(seg_map.max() + 1), scheme='facer_celebm_19',
+        ),
+        matte=None,
+        identity_shape=identity_shape,
+    )
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('images', type=Path, nargs='+',
-                    help='input image(s)')
+    ap.add_argument('images', type=Path, nargs='*',
+                    help='input image(s) — ignored if --from-preprocessing is set')
+    ap.add_argument('--from-preprocessing', type=Path, default=None,
+                    help='read shared preprocessing dir produced by '
+                         'scripts/run_preprocessing.py instead of running '
+                         'PIPNet/FFHQ/BiSeNet/MICA per image')
     ap.add_argument('--out', type=Path, default=Path('output/pixel3dmm'))
 
     # Tunables (mirror tracking.yaml + README recipes)
@@ -175,20 +233,39 @@ def main():
     print(f'loaded in {time.time() - t0:.1f}s')
 
     summary = []
-
-    print('\nbuilding preprocessing backends (PIPNet/FFHQ/BiSeNet/MICA) ...')
-    backends = _PreprocessingBackends()
-
     prepared_list = []
-    for img_path in args.images:
-        print(f'\n=== preprocess: {img_path}')
-        try:
-            prepared = _build_prepared(img_path, backends)
-            prepared_list.append(prepared)
-        except Exception as e:
-            print(f'  FAIL ({type(e).__name__}): {e}')
-            traceback.print_exc()
-            summary.append((img_path.name, 'preprocess-fail', 0.0))
+
+    if args.from_preprocessing is not None:
+        # Reuse-mode: skip running our preprocessing components, read from
+        # the shared layout produced by scripts/run_preprocessing.py.
+        preproc_dir = args.from_preprocessing.resolve()
+        if args.images:
+            image_ids = [p.stem for p in args.images]
+        else:
+            image_ids = sorted(
+                d.name for d in preproc_dir.iterdir()
+                if d.is_dir() and not d.name.startswith('_')
+            )
+        print(f'\nreusing shared preprocessing from {preproc_dir} '
+              f'({len(image_ids)} image(s)) ...')
+        for image_id in image_ids:
+            try:
+                prepared_list.append(_build_prepared_from_shared(image_id, preproc_dir))
+            except Exception as e:
+                print(f'  [{image_id}] FAIL ({type(e).__name__}): {e}')
+                summary.append((image_id, 'preprocess-fail', 0.0))
+    else:
+        print('\nbuilding preprocessing backends (PIPNet/FFHQ/BiSeNet/MICA) ...')
+        backends = _PreprocessingBackends()
+        for img_path in args.images:
+            print(f'\n=== preprocess: {img_path}')
+            try:
+                prepared = _build_prepared(img_path, backends)
+                prepared_list.append(prepared)
+            except Exception as e:
+                print(f'  FAIL ({type(e).__name__}): {e}')
+                traceback.print_exc()
+                summary.append((img_path.name, 'preprocess-fail', 0.0))
 
     if not prepared_list:
         print('\nno images preprocessed successfully — aborting')

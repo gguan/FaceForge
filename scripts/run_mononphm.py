@@ -45,7 +45,29 @@ def main():
                     help='wipe stage1/stage2 output dirs for this seq before running')
     ap.add_argument('--n-epochs', type=int, default=None,
                     help='override cfg.yaml opt.n_epochs (FFHQ default 1251)')
+    ap.add_argument('--from-preprocessing', type=Path, default=None,
+                    help='convert a shared preprocessing dir (from '
+                         'scripts/run_preprocessing.py) into mononphm layout '
+                         'under <data_tracking>/<seq_name>/ before running. '
+                         'NOTE: metrical_tracker camera params are NOT '
+                         'auto-generated — copy them in or stage seq_name '
+                         'on top of an existing prepared dir like 00059.')
     args = ap.parse_args()
+
+    # Optional: stage shared preprocessing into mononphm layout.
+    if args.from_preprocessing is not None:
+        import sys as _sys
+        _sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from run_preprocessing import as_mononphm_layout
+
+        data_tracking = (args.data_tracking
+                         or (Path(__file__).resolve().parent.parent
+                             / 'data' / 'mononphm' / 'tracking_input'))
+        target = data_tracking / args.seq_name
+        target.mkdir(parents=True, exist_ok=True)
+        print(f'staging shared preprocessing → {target}')
+        as_mononphm_layout(args.from_preprocessing.resolve(), target,
+                           seq_name=args.seq_name)
 
     if args.downsample_factor is None:
         args.downsample_factor = 1 / 6 if args.is_video else 0.33
