@@ -43,6 +43,8 @@ def main():
     ap.add_argument('--tracking-output', type=Path, default=None)
     ap.add_argument('--clear-existing', action='store_true',
                     help='wipe stage1/stage2 output dirs for this seq before running')
+    ap.add_argument('--n-epochs', type=int, default=None,
+                    help='override cfg.yaml opt.n_epochs (FFHQ default 1251)')
     args = ap.parse_args()
 
     if args.downsample_factor is None:
@@ -58,6 +60,7 @@ def main():
         run_stage2=args.stage2,
         downsample_factor=args.downsample_factor,
         clear_existing_output=args.clear_existing,
+        n_epochs_override=args.n_epochs,
     )
     for opt_name, opt_val in [
         ('data_tracking', args.data_tracking),

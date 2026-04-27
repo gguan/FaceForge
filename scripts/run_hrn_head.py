@@ -80,8 +80,12 @@ def main():
 
         out_dir = args.out / img_path.stem
         out_dir.mkdir(parents=True, exist_ok=True)
-        obj_path = model.write_obj(out, out_dir / 'head.obj')
 
+        # Source copy — makes side-by-side comparison straightforward.
+        cv2.imwrite(str(out_dir / 'source.jpg'),
+                    cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+
+        obj_path = model.write_obj(out, out_dir / 'head.obj')
         viz = model.visualize(prepared, out)
         cv2.imwrite(str(out_dir / 'viz.jpg'), cv2.cvtColor(viz, cv2.COLOR_RGB2BGR))
 

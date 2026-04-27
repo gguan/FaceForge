@@ -50,21 +50,23 @@ from faceforge.models.base import BaseModel, ModelOutput, ModelRequirements
 from faceforge.pipeline.types import PreparedInputs
 
 
-_DEFAULT_PRESERVE_ROOT = lambda: (PROJECT_ROOT / 'output' / '_pixel3dmm_overlays')
-
-
 class _OverlayPreserver:
     """Capture stageP3M's tracker output dir before its tempdir cleanup.
 
     stageP3M.P3MPipeline calls ``visualizer.preserve_tracking_outputs(path)``
     inside its ``finally:`` block right before deleting the tempdir. We
     copy the relevant per-frame artefact subfolders (``video/``, ``mesh/``,
-    ``initialization/``) into a long-lived scratch directory under the
-    project's ``output/`` tree so the wrapper can read them back to build
-    each frame's :class:`ModelOutput`.
+    ``initialization/``) into a long-lived scratch directory so the
+    wrapper can read them back to build each frame's
+    :class:`ModelOutput`.
+
+    Args:
+        preserve_root: directory where preserved snapshots land. Each
+            run creates a new ``pixel3dmm_overlay_<rand>/`` subdir under it.
     """
 
-    def __init__(self):
+    def __init__(self, preserve_root: Path):
+        self.preserve_root = preserve_root
         self.preserved_dir: Optional[Path] = None
 
     def preserve_tracking_outputs(self, tracker_output_dir: str) -> None:
@@ -73,7 +75,7 @@ class _OverlayPreserver:
         src = Path(tracker_output_dir)
         if not src.exists():
             return
-        root = _DEFAULT_PRESERVE_ROOT()
+        root = self.preserve_root
         root.mkdir(parents=True, exist_ok=True)
         dst = Path(tempfile.mkdtemp(prefix='pixel3dmm_overlay_', dir=str(root)))
         for sub in ('video', 'mesh', 'initialization', 'joint_initialization'):
@@ -138,6 +140,11 @@ class Pixel3DMMConfig:
     # underlying YAML defaults. Use for params not surfaced explicitly.
     tracker_overrides: dict = field(default_factory=dict)
 
+    # Where preserved per-frame overlays land (mesh.ply, joint_initialization
+    # /00000.png, etc.). Co-located with final outputs by default — caller
+    # can point this somewhere else if they want a separate preserve path.
+    overlay_preserve_root: str = str(PROJECT_ROOT / 'output' / 'pixel3dmm' / '_overlays')
+
 
 class Pixel3DMMModel(BaseModel):
     """pixel3dmm tracker exposed through the unified model interface.
@@ -187,7 +194,9 @@ class Pixel3DMMModel(BaseModel):
                 device=self.config.device,
                 tracker_overrides=tracker_overrides,
             )
-            preserver = _OverlayPreserver()
+            preserve_root = Path(self.config.overlay_preserve_root).resolve()
+            preserve_root.mkdir(parents=True, exist_ok=True)
+            preserver = _OverlayPreserver(preserve_root=preserve_root)
             self._p3m = P3MPipeline(p3m_cfg, visualizer=preserver)
             self._overlay_preserver = preserver
 

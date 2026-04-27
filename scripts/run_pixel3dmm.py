@@ -29,6 +29,8 @@ see ``submodules/pixel3dmm/README.md`` §1.
 from __future__ import annotations
 
 import argparse
+import os
+import shutil
 import time
 import traceback
 from pathlib import Path
@@ -38,6 +40,24 @@ import numpy as np
 
 from faceforge.models.pixel3dmm import Pixel3DMMConfig, Pixel3DMMModel
 from faceforge.pipeline.types import PreparedInputs, PreprocessingConfig
+
+
+def _set_default_pixel3dmm_env(out_root: Path) -> None:
+    """Auto-set the three PIXEL3DMM_* env vars if the user hasn't already.
+
+    The env_paths.py at ``submodules/pixel3dmm/src/pixel3dmm/env_paths.py``
+    reads these at import time, so we have to plant defaults BEFORE the
+    wrapper's lazy imports of pixel3dmm. Intermediate dirs (preprocessed
+    + tracking) live under the same ``out_root`` so everything for one
+    run colocates.
+    """
+    project_root = Path(__file__).resolve().parents[1]
+    os.environ.setdefault(
+        'PIXEL3DMM_CODE_BASE', str(project_root / 'submodules' / 'pixel3dmm'))
+    os.environ.setdefault(
+        'PIXEL3DMM_PREPROCESSED_DATA', str(out_root / '_preprocessed'))
+    os.environ.setdefault(
+        'PIXEL3DMM_TRACKING_OUTPUT', str(out_root / '_tracking'))
 
 
 class _PreprocessingBackends:
@@ -130,6 +150,9 @@ def main():
         args.w_shape = 0.01
         args.w_exp = 0.1
 
+    args.out.mkdir(parents=True, exist_ok=True)
+    _set_default_pixel3dmm_env(args.out.resolve())
+
     cfg = Pixel3DMMConfig(
         render_size=args.render_size,
         device=args.device,
@@ -144,13 +167,13 @@ def main():
         w_shape=args.w_shape,
         w_exp=args.w_exp,
         is_discontinuous=args.multi_image or len(args.images) == 1,
+        overlay_preserve_root=str(args.out / '_overlays'),
     )
     print(f'loading pixel3dmm model (device={args.device}, iters={args.iters}) ...')
     t0 = time.time()
     model = Pixel3DMMModel(cfg)
     print(f'loaded in {time.time() - t0:.1f}s')
 
-    args.out.mkdir(parents=True, exist_ok=True)
     summary = []
 
     print('\nbuilding preprocessing backends (PIPNet/FFHQ/BiSeNet/MICA) ...')
@@ -182,14 +205,38 @@ def main():
     elapsed = time.time() - t0
     print(f'  tracker done in {elapsed:.1f}s')
 
-    for prepared, output in zip(prepared_list, outputs):
+    # The overlay preserver wrote each frame's mesh.ply + joint render
+    # under <preserve_root>/pixel3dmm_overlay_*/{mesh,joint_initialization}/.
+    # Copy the per-frame artefacts into the per-image output dir so each
+    # output/<image_id>/ is self-contained for comparison.
+    preserved = outputs[0].extras.get('tracker_dir') if outputs else ''
+    preserved_dir = Path(preserved) if preserved else None
+
+    for i, (prepared, output) in enumerate(zip(prepared_list, outputs)):
         out_dir = args.out / prepared.image_id
         out_dir.mkdir(parents=True, exist_ok=True)
+
+        # Source copy — makes side-by-side comparison straightforward.
+        cv2.imwrite(str(out_dir / 'source.jpg'),
+                    cv2.cvtColor(prepared.image_rgb, cv2.COLOR_RGB2BGR))
+
+        # Per-frame visualization strip.
         viz = model.visualize(prepared, output)
         cv2.imwrite(str(out_dir / 'viz.jpg'), cv2.cvtColor(viz, cv2.COLOR_RGB2BGR))
+
         if output.flame_params:
             np.savez(out_dir / 'flame_params.npz',
                      **{k: np.asarray(v) for k, v in output.flame_params.items()})
+
+        # Mesh + joint render copies from the preserve dir.
+        if preserved_dir and preserved_dir.exists():
+            mesh_src = preserved_dir / 'mesh' / f'{i:05d}.ply'
+            if mesh_src.exists():
+                shutil.copy(mesh_src, out_dir / 'mesh.ply')
+            joint = preserved_dir / 'joint_initialization' / f'{i:05d}.png'
+            if joint.exists():
+                shutil.copy(joint, out_dir / 'overlay.png')
+
         summary.append((prepared.image_id, 'ok', elapsed / max(1, len(prepared_list))))
 
     print('\n=== summary ===')
